@@ -257,11 +257,8 @@ export default function Home() {
   // plus the AI theme taxonomy. The displayed dashboard is derived from these.
   const [reviews, setReviews] = useState<Review[]>([])
   const [taxonomy, setTaxonomy] = useState<ThemeTaxonomy[] | null>(null)
-  const [hasCityData, setHasCityData] = useState(false)
-
-  // region controls (two-tier) + timeframe
+  // region controls + timeframe
   const [country, setCountry] = useState('all')
-  const [city, setCity] = useState('all')
   const [timeframe, setTimeframe] = useState<Timeframe>('all')
 
   // dashboard controls
@@ -292,8 +289,8 @@ export default function Home() {
   // analysis is open, so a refresh restores not just the data but the view.
   useEffect(() => {
     if (!activeHash) return
-    saveActive(activeHash, { country, city, timeframe, sentimentFilter, teamFilter, search })
-  }, [activeHash, country, city, timeframe, sentimentFilter, teamFilter, search])
+    saveActive(activeHash, { country, city: 'all', timeframe, sentimentFilter, teamFilter, search })
+  }, [activeHash, country, timeframe, sentimentFilter, teamFilter, search])
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
@@ -322,9 +319,7 @@ export default function Home() {
       if (cached) {
         setReviews(cached.reviews)
         setTaxonomy(cached.taxonomy as ThemeTaxonomy[])
-        setHasCityData(cached.hasCityData)
         setCountry('all')
-        setCity('all')
         setTimeframe('all')
         setActiveHash(csvHash)
         saveActive(csvHash, { country: 'all', city: 'all', timeframe: 'all', sentimentFilter: 'all', teamFilter: 'all', search: '' })
@@ -361,9 +356,7 @@ export default function Home() {
       const data = await response.json() as { themes: ThemeTaxonomy[] }
       setReviews(parsedReviews)
       setTaxonomy(data.themes)
-      setHasCityData(!!detectedColumns.city)
       setCountry('all')
-      setCity('all')
       setTimeframe('all')
 
       saveToCache({
@@ -389,9 +382,7 @@ export default function Home() {
     const { entry, filters } = resumeCandidate
     setReviews(entry.reviews)
     setTaxonomy(entry.taxonomy as ThemeTaxonomy[])
-    setHasCityData(entry.hasCityData)
     setCountry(filters.country)
-    setCity(filters.city)
     setTimeframe(filters.timeframe as Timeframe)
     setSentimentFilter(filters.sentimentFilter as SentimentFilter)
     setTeamFilter(filters.teamFilter as TeamFilter)
@@ -416,37 +407,29 @@ export default function Home() {
     setExpanded(null)
     setActiveSlackTeam(null)
     setCountry('all')
-    setCity('all')
     setTimeframe('all')
     setActiveHash(null)
     clearActive()
   }
 
-  // Country list (non-empty, by volume) and the cities within the picked country.
+  // Country list (non-empty, by volume).
   const countries = useMemo(() => {
     const map = new Map<string, number>()
     reviews.forEach(r => { if (r.country) map.set(r.country, (map.get(r.country) || 0) + 1) })
     return [...map.entries()].sort((a, b) => b[1] - a[1])
   }, [reviews])
 
-  const cities = useMemo(() => {
-    if (country === 'all') return []
-    const set = new Set<string>()
-    reviews.forEach(r => { if (r.country === country && r.city) set.add(r.city) })
-    return [...set].sort()
-  }, [reviews, country])
-
   // The entire dashboard is derived from this region-sliced view.
   const view = useMemo(
-    () => (taxonomy ? computeView(reviews, taxonomy, country, city, timeframe) : null),
-    [taxonomy, reviews, country, city, timeframe]
+    () => (taxonomy ? computeView(reviews, taxonomy, country, 'all', timeframe) : null),
+    [taxonomy, reviews, country, timeframe]
   )
 
   // Prior-period comparison for the same region, only meaningful once a
   // specific timeframe window is picked (see computeTrend).
   const trend = useMemo(
-    () => (taxonomy ? computeTrend(reviews, taxonomy, country, city, timeframe) : null),
-    [taxonomy, reviews, country, city, timeframe]
+    () => (taxonomy ? computeTrend(reviews, taxonomy, country, 'all', timeframe) : null),
+    [taxonomy, reviews, country, timeframe]
   )
 
   const filteredThemes = useMemo(() => {
@@ -463,7 +446,7 @@ export default function Home() {
     })
   }, [view, search, sentimentFilter, teamFilter])
 
-  const onCountryChange = (c: string) => { setCountry(c); setCity('all'); setExpanded(null) }
+  const onCountryChange = (c: string) => { setCountry(c); setExpanded(null) }
 
   return (
     <main className="min-h-screen bg-cream">
@@ -522,7 +505,7 @@ export default function Home() {
                 results={view}
                 filteredThemes={filteredThemes}
                 trend={trend}
-                regionLabel={`${country === 'all' ? 'All countries' : countryName(country)}${city !== 'all' ? ` · ${city}` : ''}${timeframe !== 'all' ? ` · ${TIMEFRAME_LABEL[timeframe]}` : ''}`}
+                regionLabel={`${country === 'all' ? 'All countries' : countryName(country)}${timeframe !== 'all' ? ` · ${TIMEFRAME_LABEL[timeframe]}` : ''}`}
               />
               <button onClick={resetAll} className="rounded-pill bg-ink text-cream font-semibold text-sm px-5 py-2.5 hover:bg-black transition">
                 ← New upload
@@ -534,10 +517,6 @@ export default function Home() {
             countries={countries}
             country={country}
             onCountryChange={onCountryChange}
-            cities={cities}
-            city={city}
-            setCity={setCity}
-            hasCityData={hasCityData}
             timeframe={timeframe}
             setTimeframe={t => { setTimeframe(t); setExpanded(null) }}
             totalAll={reviews.length}
@@ -614,23 +593,18 @@ function UploadCard(props: {
   )
 }
 
-/* ---------- Region filter (two-tier country → city) ---------- */
+/* ---------- Region filter ---------- */
 
 function RegionFilter(props: {
   countries: Array<[string, number]>
   country: string
   onCountryChange: (c: string) => void
-  cities: string[]
-  city: string
-  setCity: (c: string) => void
-  hasCityData: boolean
   timeframe: Timeframe
   setTimeframe: (t: Timeframe) => void
   totalAll: number
   totalRegion: number
 }) {
-  const { countries, country, onCountryChange, cities, city, setCity, hasCityData, timeframe, setTimeframe, totalAll, totalRegion } = props
-  const cityDisabled = country === 'all' || cities.length === 0
+  const { countries, country, onCountryChange, timeframe, setTimeframe, totalAll, totalRegion } = props
 
   return (
     <div className="bg-white rounded-3xl border border-tan p-5 mb-6">
@@ -649,25 +623,6 @@ function RegionFilter(props: {
           </select>
         </div>
 
-        <div className="flex-1">
-          <label className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-1.5">City</label>
-          <select
-            value={city}
-            onChange={e => setCity(e.target.value)}
-            disabled={cityDisabled}
-            className="w-full rounded-pill border border-tan bg-cream px-5 py-2.5 text-sm font-semibold text-ink focus:outline-none focus:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <option value="all">All cities</option>
-            {cities.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-          {!hasCityData && (
-            <p className="text-[11px] text-muted mt-1">No city column in this CSV — filtering by country. City lights up automatically when the export includes one.</p>
-          )}
-          {hasCityData && country === 'all' && (
-            <p className="text-[11px] text-muted mt-1">Pick a country to see its cities.</p>
-          )}
-        </div>
-
         <div>
           <label className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-1.5">Timeframe</label>
           <FilterGroup
@@ -684,7 +639,7 @@ function RegionFilter(props: {
             {totalRegion.toLocaleString()}<span className="text-sm font-medium text-muted-dark"> / {totalAll.toLocaleString()}</span>
           </p>
           <p className="text-[11px] text-muted-dark">
-            {country === 'all' ? 'all markets' : countryName(country)}{city !== 'all' ? ` · ${city}` : ''}{timeframe !== 'all' ? ` · ${TIMEFRAME_LABEL[timeframe]}` : ''}
+            {country === 'all' ? 'all markets' : countryName(country)}{timeframe !== 'all' ? ` · ${TIMEFRAME_LABEL[timeframe]}` : ''}
           </p>
         </div>
       </div>
