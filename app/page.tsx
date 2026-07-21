@@ -35,6 +35,10 @@ interface AnalysisResult {
 
 type SentimentFilter = 'all' | 'negative' | 'neutral' | 'positive'
 type TeamFilter = 'all' | Team
+type Timeframe = 'all' | 'year' | 'quarter' | 'month'
+
+const TIMEFRAME_DAYS: Record<Exclude<Timeframe, 'all'>, number> = { year: 365, quarter: 90, month: 30 }
+const TIMEFRAME_LABEL: Record<Timeframe, string> = { all: 'all time', year: 'last year', quarter: 'last quarter', month: 'last month' }
 
 const TEAMS: Team[] = ['Product', 'Tech', 'CX & Support', 'Ops', 'Marketing', 'Other']
 
@@ -87,9 +91,20 @@ function volumeChart(reviews: Review[]) {
 // Re-slice the whole dashboard for the selected country/city, client-side.
 // Themes keep the AI taxonomy but every number (count, %, sentiment, impact,
 // quotes) is recomputed from the reviews that fall in the current region.
-function computeView(reviews: Review[], taxonomy: ThemeTaxonomy[], country: string, city: string): AnalysisResult {
+function computeView(reviews: Review[], taxonomy: ThemeTaxonomy[], country: string, city: string, timeframe: Timeframe): AnalysisResult {
+  // Timeframe windows anchor to the newest review date in the data (not the wall
+  // clock) so "last month" means the last month of available reviews — exports
+  // are usually historical.
+  let cutoff: number | null = null
+  if (timeframe !== 'all') {
+    const times = reviews.map(r => Date.parse(r.date)).filter(t => !isNaN(t))
+    if (times.length) cutoff = Math.max(...times) - TIMEFRAME_DAYS[timeframe] * 86400000
+  }
+
   const inRegion = (r: Review) =>
-    (country === 'all' || r.country === country) && (city === 'all' || r.city === city)
+    (country === 'all' || r.country === country) &&
+    (city === 'all' || r.city === city) &&
+    (cutoff === null || Date.parse(r.date) >= cutoff)
 
   const regionIdx = new Set<number>()
   reviews.forEach((r, i) => { if (inRegion(r)) regionIdx.add(i) })
@@ -162,9 +177,10 @@ export default function Home() {
   const [taxonomy, setTaxonomy] = useState<ThemeTaxonomy[] | null>(null)
   const [hasCityData, setHasCityData] = useState(false)
 
-  // region controls (two-tier)
+  // region controls (two-tier) + timeframe
   const [country, setCountry] = useState('all')
   const [city, setCity] = useState('all')
+  const [timeframe, setTimeframe] = useState<Timeframe>('all')
 
   // dashboard controls
   const [search, setSearch] = useState('')
@@ -222,6 +238,7 @@ export default function Home() {
       setHasCityData(!!detectedColumns.city)
       setCountry('all')
       setCity('all')
+      setTimeframe('all')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Analysis failed')
     } finally {
@@ -240,6 +257,7 @@ export default function Home() {
     setActiveSlackTeam(null)
     setCountry('all')
     setCity('all')
+    setTimeframe('all')
   }
 
   // Country list (non-empty, by volume) and the cities within the picked country.
@@ -258,8 +276,8 @@ export default function Home() {
 
   // The entire dashboard is derived from this region-sliced view.
   const view = useMemo(
-    () => (taxonomy ? computeView(reviews, taxonomy, country, city) : null),
-    [taxonomy, reviews, country, city]
+    () => (taxonomy ? computeView(reviews, taxonomy, country, city, timeframe) : null),
+    [taxonomy, reviews, country, city, timeframe]
   )
 
   const filteredThemes = useMemo(() => {
@@ -325,6 +343,8 @@ export default function Home() {
             city={city}
             setCity={setCity}
             hasCityData={hasCityData}
+            timeframe={timeframe}
+            setTimeframe={t => { setTimeframe(t); setExpanded(null) }}
             totalAll={reviews.length}
             totalRegion={view.totalReviews}
           />
@@ -408,10 +428,12 @@ function RegionFilter(props: {
   city: string
   setCity: (c: string) => void
   hasCityData: boolean
+  timeframe: Timeframe
+  setTimeframe: (t: Timeframe) => void
   totalAll: number
   totalRegion: number
 }) {
-  const { countries, country, onCountryChange, cities, city, setCity, hasCityData, totalAll, totalRegion } = props
+  const { countries, country, onCountryChange, cities, city, setCity, hasCityData, timeframe, setTimeframe, totalAll, totalRegion } = props
   const cityDisabled = country === 'all' || cities.length === 0
 
   return (
@@ -450,13 +472,23 @@ function RegionFilter(props: {
           )}
         </div>
 
+        <div>
+          <label className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-1.5">Timeframe</label>
+          <FilterGroup
+            label=""
+            value={timeframe}
+            onChange={v => setTimeframe(v as Timeframe)}
+            options={[['all', 'All'], ['year', 'Last year'], ['quarter', 'Last quarter'], ['month', 'Last month']]}
+          />
+        </div>
+
         <div className="md:pb-2 md:text-right">
           <p className="text-xs text-muted-dark">Showing</p>
           <p className="text-lg font-extrabold text-ink leading-tight">
             {totalRegion.toLocaleString()}<span className="text-sm font-medium text-muted-dark"> / {totalAll.toLocaleString()}</span>
           </p>
           <p className="text-[11px] text-muted-dark">
-            {country === 'all' ? 'all markets' : countryName(country)}{city !== 'all' ? ` · ${city}` : ''}
+            {country === 'all' ? 'all markets' : countryName(country)}{city !== 'all' ? ` · ${city}` : ''}{timeframe !== 'all' ? ` · ${TIMEFRAME_LABEL[timeframe]}` : ''}
           </p>
         </div>
       </div>
@@ -661,7 +693,7 @@ function FilterGroup({ label, value, onChange, options }: {
 }) {
   return (
     <div className="flex items-center gap-2">
-      <span className="text-xs font-semibold uppercase tracking-wide text-muted-dark">{label}</span>
+      {label && <span className="text-xs font-semibold uppercase tracking-wide text-muted-dark">{label}</span>}
       <div className="flex flex-wrap gap-1.5">
         {options.map(([val, lab]) => (
           <button
