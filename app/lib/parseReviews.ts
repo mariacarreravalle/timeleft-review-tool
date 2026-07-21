@@ -2,6 +2,8 @@ export interface Review {
   date: string
   rating: number
   text: string
+  country: string  // raw value from the CSV (e.g. ISO code "us"), '' if absent
+  city: string     // raw value from the CSV, '' if no city column
 }
 
 export interface ParseResult {
@@ -11,6 +13,8 @@ export interface ParseResult {
     translatedText: string | null
     rating: string | null
     date: string | null
+    country: string | null
+    city: string | null
   }
   totalRows: number
   emptyTextRows: number
@@ -162,7 +166,7 @@ export function parseReviewsCsv(raw: string): ParseResult {
   if (rows.length === 0) {
     return {
       reviews: [],
-      detectedColumns: { reviewText: null, translatedText: null, rating: null, date: null },
+      detectedColumns: { reviewText: null, translatedText: null, rating: null, date: null, country: null, city: null },
       totalRows: 0,
       emptyTextRows: 0
     }
@@ -179,11 +183,18 @@ export function parseReviewsCsv(raw: string): ParseResult {
   )
   const ratingCol = findColumn(headers, ['rating', 'score', 'stars'])
   const dateCol = findColumn(headers, ['submission date', 'date', 'submitted', 'created', 'timestamp'])
+  // "country" not "language" — exclude the review-language column so we don't
+  // mistake a locale for a market.
+  const languageCol = findColumn(headers, ['language', 'locale'])
+  const countryCol = findColumn(headers, ['country', 'market', 'region'], languageCol ? [languageCol] : [])
+  const cityCol = findColumn(headers, ['city', 'town', 'metro', 'location'])
 
   const translatedIdx = translatedCol ? headers.indexOf(translatedCol) : -1
   const originalIdx = originalCol ? headers.indexOf(originalCol) : -1
   const ratingIdx = ratingCol ? headers.indexOf(ratingCol) : -1
   const dateIdx = dateCol ? headers.indexOf(dateCol) : -1
+  const countryIdx = countryCol ? headers.indexOf(countryCol) : -1
+  const cityIdx = cityCol ? headers.indexOf(cityCol) : -1
 
   let emptyTextRows = 0
   const reviews: Review[] = []
@@ -201,13 +212,15 @@ export function parseReviewsCsv(raw: string): ParseResult {
     reviews.push({
       date: dateIdx >= 0 ? (fields[dateIdx] || '') : '',
       rating: ratingIdx >= 0 ? (parseInt(fields[ratingIdx], 10) || 0) : 0,
-      text
+      text,
+      country: countryIdx >= 0 ? (fields[countryIdx] || '').trim() : '',
+      city: cityIdx >= 0 ? (fields[cityIdx] || '').trim() : ''
     })
   }
 
   return {
     reviews,
-    detectedColumns: { reviewText: originalCol, translatedText: translatedCol, rating: ratingCol, date: dateCol },
+    detectedColumns: { reviewText: originalCol, translatedText: translatedCol, rating: ratingCol, date: dateCol, country: countryCol, city: cityCol },
     totalRows: dataRows.length,
     emptyTextRows
   }

@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
-import { parseReviewsCsv } from './lib/parseReviews'
+import { parseReviewsCsv, type Review } from './lib/parseReviews'
 
 type Team = 'Product' | 'Tech' | 'CX & Support' | 'Ops' | 'Marketing' | 'Other'
 
@@ -17,6 +17,14 @@ interface Theme {
   quotes: string[]
 }
 
+// Returned by the API: theme + the review indices that express it (multi-label).
+interface ThemeTaxonomy {
+  name: string
+  team: Team
+  action: string
+  reviewIndexes: number[]
+}
+
 interface AnalysisResult {
   totalReviews: number
   sentiment: { negative: number; neutral: number; positive: number; unrated: number }
@@ -29,6 +37,96 @@ type SentimentFilter = 'all' | 'negative' | 'neutral' | 'positive'
 type TeamFilter = 'all' | Team
 
 const TEAMS: Team[] = ['Product', 'Tech', 'CX & Support', 'Ops', 'Marketing', 'Other']
+
+const REGION_NAMES = typeof Intl !== 'undefined' && 'DisplayNames' in Intl
+  ? new Intl.DisplayNames(['en'], { type: 'region' })
+  : null
+
+function countryName(code: string): string {
+  const c = code.trim().toUpperCase()
+  if (!c) return 'Unknown region'
+  try { return REGION_NAMES?.of(c) || c } catch { return c }
+}
+
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.min(Math.max(n, lo), hi)
+}
+
+// Volume-led urgency, amplified by negativity + hard-signal keywords.
+function calculateImpact(count: number, sentiment: number, total: number, texts: string[]): number {
+  const volumeShare = total > 0 ? count / total : 0
+  const negativity = sentiment < 0 ? -sentiment : 0
+  const urgencyKeywords = ['cancel', 'refund', 'uninstall', 'waste', 'scam', 'bug', 'crash', 'error', 'charge', 'unsubscribe']
+  const hasUrgency = texts.some(t => urgencyKeywords.some(kw => t.toLowerCase().includes(kw)))
+  return clamp(volumeShare * 0.6 + negativity * 0.25 + (hasUrgency ? 0.15 : 0), 0, 1)
+}
+
+function sentimentBreakdown(reviews: Review[]) {
+  const b = { negative: 0, neutral: 0, positive: 0, unrated: 0 }
+  for (const r of reviews) {
+    if (r.rating >= 4) b.positive++
+    else if (r.rating === 3) b.neutral++
+    else if (r.rating >= 1) b.negative++
+    else b.unrated++
+  }
+  return b
+}
+
+function ratingChart(reviews: Review[]) {
+  const counts: Record<number, number> = {}
+  reviews.forEach(r => { if (r.rating > 0) counts[r.rating] = (counts[r.rating] || 0) + 1 })
+  return [1, 2, 3, 4, 5].map(rating => ({ rating, count: counts[rating] || 0 }))
+}
+
+function volumeChart(reviews: Review[]) {
+  const byDate: Record<string, number> = {}
+  reviews.forEach(r => { if (r.date) { const d = r.date.split('T')[0]; byDate[d] = (byDate[d] || 0) + 1 } })
+  return Object.entries(byDate).sort(([a], [b]) => a.localeCompare(b)).map(([date, count]) => ({ date, count })).slice(-30)
+}
+
+// Re-slice the whole dashboard for the selected country/city, client-side.
+// Themes keep the AI taxonomy but every number (count, %, sentiment, impact,
+// quotes) is recomputed from the reviews that fall in the current region.
+function computeView(reviews: Review[], taxonomy: ThemeTaxonomy[], country: string, city: string): AnalysisResult {
+  const inRegion = (r: Review) =>
+    (country === 'all' || r.country === country) && (city === 'all' || r.city === city)
+
+  const regionIdx = new Set<number>()
+  reviews.forEach((r, i) => { if (inRegion(r)) regionIdx.add(i) })
+  const regionReviews = [...regionIdx].map(i => reviews[i])
+  const total = regionReviews.length
+
+  const themes: Theme[] = taxonomy
+    .map(t => {
+      const members = t.reviewIndexes.filter(i => regionIdx.has(i))
+      const count = members.length
+      const ratings = members.map(i => reviews[i].rating).filter(r => r >= 1)
+      const avg = ratings.length ? ratings.reduce((a, b) => a + b, 0) / ratings.length : 0
+      const sentiment = ratings.length ? clamp((avg - 3) / 2, -1, 1) : 0
+      const texts = members.map(i => reviews[i].text)
+      const quotes = [...texts].sort((a, b) => b.length - a.length).slice(0, 3).map(q => q.slice(0, 220))
+      return {
+        name: t.name,
+        team: t.team,
+        action: t.action,
+        count,
+        percentage: total > 0 ? Math.round((count / total) * 100) : 0,
+        sentiment,
+        impact: calculateImpact(count, sentiment, total, texts),
+        quotes
+      }
+    })
+    .filter(t => t.count > 0)
+    .sort((a, b) => b.impact - a.impact)
+
+  return {
+    totalReviews: total,
+    sentiment: sentimentBreakdown(regionReviews),
+    themes,
+    overallRatings: ratingChart(regionReviews),
+    volumeOverTime: volumeChart(regionReviews)
+  }
+}
 
 const TEAM_DOT: Record<Team, string> = {
   Product: '#F97709',
@@ -55,9 +153,18 @@ function sentimentEmoji(s: number) {
 export default function Home() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [results, setResults] = useState<AnalysisResult | null>(null)
   const [file, setFile] = useState<File | null>(null)
   const [parseInfo, setParseInfo] = useState('')
+
+  // analysis data: the raw parsed reviews (kept client-side for region slicing)
+  // plus the AI theme taxonomy. The displayed dashboard is derived from these.
+  const [reviews, setReviews] = useState<Review[]>([])
+  const [taxonomy, setTaxonomy] = useState<ThemeTaxonomy[] | null>(null)
+  const [hasCityData, setHasCityData] = useState(false)
+
+  // region controls (two-tier)
+  const [country, setCountry] = useState('all')
+  const [city, setCity] = useState('all')
 
   // dashboard controls
   const [search, setSearch] = useState('')
@@ -85,31 +192,36 @@ export default function Home() {
 
     try {
       const text = await file.text()
-      const { reviews, detectedColumns, totalRows } = parseReviewsCsv(text)
+      const { reviews: parsedReviews, detectedColumns, totalRows } = parseReviewsCsv(text)
 
-      if (reviews.length === 0 || (!detectedColumns.reviewText && !detectedColumns.translatedText)) {
+      if (parsedReviews.length === 0 || (!detectedColumns.reviewText && !detectedColumns.translatedText)) {
         setError('No review text found. Make sure the CSV has a column like "Review", "Comment", or "Feedback".')
         setLoading(false)
         return
       }
 
       setParseInfo(
-        `Parsed ${reviews.length} of ${totalRows} rows · text: "${detectedColumns.translatedText || detectedColumns.reviewText}"` +
+        `Parsed ${parsedReviews.length} of ${totalRows} rows · text: "${detectedColumns.translatedText || detectedColumns.reviewText}"` +
         (detectedColumns.rating ? ` · rating: "${detectedColumns.rating}"` : '') +
-        (detectedColumns.date ? ` · date: "${detectedColumns.date}"` : '')
+        (detectedColumns.country ? ` · country: "${detectedColumns.country}"` : '')
       )
 
       const response = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reviews })
+        body: JSON.stringify({ reviews: parsedReviews })
       })
 
       if (!response.ok) {
         const body = await response.json().catch(() => null)
         throw new Error(body?.error || `Analysis failed (HTTP ${response.status})`)
       }
-      setResults(await response.json())
+      const data = await response.json() as { themes: ThemeTaxonomy[] }
+      setReviews(parsedReviews)
+      setTaxonomy(data.themes)
+      setHasCityData(!!detectedColumns.city)
+      setCountry('all')
+      setCity('all')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Analysis failed')
     } finally {
@@ -118,19 +230,42 @@ export default function Home() {
   }
 
   const resetAll = () => {
-    setResults(null)
+    setReviews([])
+    setTaxonomy(null)
     setFile(null)
     setSearch('')
     setSentimentFilter('all')
     setTeamFilter('all')
     setExpanded(null)
     setActiveSlackTeam(null)
+    setCountry('all')
+    setCity('all')
   }
 
+  // Country list (non-empty, by volume) and the cities within the picked country.
+  const countries = useMemo(() => {
+    const map = new Map<string, number>()
+    reviews.forEach(r => { if (r.country) map.set(r.country, (map.get(r.country) || 0) + 1) })
+    return [...map.entries()].sort((a, b) => b[1] - a[1])
+  }, [reviews])
+
+  const cities = useMemo(() => {
+    if (country === 'all') return []
+    const set = new Set<string>()
+    reviews.forEach(r => { if (r.country === country && r.city) set.add(r.city) })
+    return [...set].sort()
+  }, [reviews, country])
+
+  // The entire dashboard is derived from this region-sliced view.
+  const view = useMemo(
+    () => (taxonomy ? computeView(reviews, taxonomy, country, city) : null),
+    [taxonomy, reviews, country, city]
+  )
+
   const filteredThemes = useMemo(() => {
-    if (!results) return []
+    if (!view) return []
     const q = search.trim().toLowerCase()
-    return results.themes.filter(t => {
+    return view.themes.filter(t => {
       if (sentimentFilter !== 'all' && sentimentBucket(t.sentiment) !== sentimentFilter) return false
       if (teamFilter !== 'all' && t.team !== teamFilter) return false
       if (q) {
@@ -139,11 +274,13 @@ export default function Home() {
       }
       return true
     })
-  }, [results, search, sentimentFilter, teamFilter])
+  }, [view, search, sentimentFilter, teamFilter])
+
+  const onCountryChange = (c: string) => { setCountry(c); setCity('all'); setExpanded(null) }
 
   return (
     <main className="min-h-screen bg-cream">
-      {!results ? (
+      {!view ? (
         <div className="min-h-screen flex flex-col items-center justify-center px-6 py-10">
           <div className="text-center mb-8">
             <div className="flex items-baseline justify-center gap-2">
@@ -179,8 +316,21 @@ export default function Home() {
               ← New upload
             </button>
           </div>
+
+          <RegionFilter
+            countries={countries}
+            country={country}
+            onCountryChange={onCountryChange}
+            cities={cities}
+            city={city}
+            setCity={setCity}
+            hasCityData={hasCityData}
+            totalAll={reviews.length}
+            totalRegion={view.totalReviews}
+          />
+
           <Dashboard
-            results={results}
+            results={view}
             filteredThemes={filteredThemes}
             search={search}
             setSearch={setSearch}
@@ -244,6 +394,72 @@ function UploadCard(props: {
           Analyze reviews
         </button>
       )}
+    </div>
+  )
+}
+
+/* ---------- Region filter (two-tier country → city) ---------- */
+
+function RegionFilter(props: {
+  countries: Array<[string, number]>
+  country: string
+  onCountryChange: (c: string) => void
+  cities: string[]
+  city: string
+  setCity: (c: string) => void
+  hasCityData: boolean
+  totalAll: number
+  totalRegion: number
+}) {
+  const { countries, country, onCountryChange, cities, city, setCity, hasCityData, totalAll, totalRegion } = props
+  const cityDisabled = country === 'all' || cities.length === 0
+
+  return (
+    <div className="bg-white rounded-3xl border border-tan p-5 mb-6">
+      <div className="flex flex-col md:flex-row md:items-end gap-4">
+        <div className="flex-1">
+          <label className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-1.5">Country / market</label>
+          <select
+            value={country}
+            onChange={e => onCountryChange(e.target.value)}
+            className="w-full rounded-pill border border-tan bg-cream px-5 py-2.5 text-sm font-semibold text-ink focus:outline-none focus:border-accent cursor-pointer"
+          >
+            <option value="all">All countries ({totalAll})</option>
+            {countries.map(([code, count]) => (
+              <option key={code} value={code}>{countryName(code)} ({count})</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex-1">
+          <label className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-1.5">City</label>
+          <select
+            value={city}
+            onChange={e => setCity(e.target.value)}
+            disabled={cityDisabled}
+            className="w-full rounded-pill border border-tan bg-cream px-5 py-2.5 text-sm font-semibold text-ink focus:outline-none focus:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <option value="all">All cities</option>
+            {cities.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          {!hasCityData && (
+            <p className="text-[11px] text-muted mt-1">No city column in this CSV — filtering by country. City lights up automatically when the export includes one.</p>
+          )}
+          {hasCityData && country === 'all' && (
+            <p className="text-[11px] text-muted mt-1">Pick a country to see its cities.</p>
+          )}
+        </div>
+
+        <div className="md:pb-2 md:text-right">
+          <p className="text-xs text-muted-dark">Showing</p>
+          <p className="text-lg font-extrabold text-ink leading-tight">
+            {totalRegion.toLocaleString()}<span className="text-sm font-medium text-muted-dark"> / {totalAll.toLocaleString()}</span>
+          </p>
+          <p className="text-[11px] text-muted-dark">
+            {country === 'all' ? 'all markets' : countryName(country)}{city !== 'all' ? ` · ${city}` : ''}
+          </p>
+        </div>
+      </div>
     </div>
   )
 }
