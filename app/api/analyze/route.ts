@@ -8,7 +8,7 @@ export const runtime = 'nodejs'
 // Model is env-overridable. Default to Sonnet: fast + good enough for clustering.
 const ANALYSIS_MODEL = process.env.ANALYSIS_MODEL || 'claude-sonnet-5'
 
-const TEAMS = ['Marketing', 'Tech', 'Product', 'Other'] as const
+const TEAMS = ['Product', 'Tech', 'CX & Support', 'Ops', 'Marketing', 'Other'] as const
 type Team = typeof TEAMS[number]
 
 // Structured-output schema: forces the model to return valid, parseable JSON.
@@ -145,7 +145,7 @@ For EACH theme return:
 - "name": specific and actionable (e.g. "Subscription pricing complaints", "App crashes & login bugs") — not a sentiment label like "negative feedback".
 - "count": how many of the ${reviews.length} reviews above mention or express this theme (integer). A review can count toward more than one theme (multi-label). Read them all and be realistic — this drives percentages a team will act on.
 - "sentiment": average sentiment for the theme, -1 (very negative) to +1 (very positive).
-- "team": which internal team should own it — exactly one of "Marketing", "Tech", "Product", "Other". Guidance: app bugs/crashes/performance → Tech; pricing/subscription model, features, matching, cities → Product; brand perception, expectations set by ads, growth → Marketing; billing/refunds/support/ops → Other.
+- "team": which internal team should own it — exactly one of "Product", "Tech", "CX & Support", "Ops", "Marketing", "Other". Guidance: app bugs/crashes/performance/login issues → Tech; product decisions like pricing/subscription model, features, matching algorithm, city coverage → Product; billing disputes, refunds, cancellation help, complaint handling, support responsiveness → CX & Support; event logistics, restaurant/venue operations, no-shows, on-the-ground execution → Ops; brand perception, expectations set by ads, acquisition/growth → Marketing; anything that fits none of these → Other.
 - "action": one concrete next step for that team, max ~18 words.
 - "quotes": exactly 3 SHORT quotes copied VERBATIM from the reviews above that best evidence this theme.
 

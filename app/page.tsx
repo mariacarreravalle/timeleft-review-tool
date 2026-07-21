@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react'
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { parseReviewsCsv } from './lib/parseReviews'
 
-type Team = 'Marketing' | 'Tech' | 'Product' | 'Other'
+type Team = 'Product' | 'Tech' | 'CX & Support' | 'Ops' | 'Marketing' | 'Other'
 
 interface Theme {
   name: string
@@ -28,11 +28,13 @@ interface AnalysisResult {
 type SentimentFilter = 'all' | 'negative' | 'neutral' | 'positive'
 type TeamFilter = 'all' | Team
 
-const TEAMS: Team[] = ['Marketing', 'Tech', 'Product', 'Other']
+const TEAMS: Team[] = ['Product', 'Tech', 'CX & Support', 'Ops', 'Marketing', 'Other']
 
 const TEAM_DOT: Record<Team, string> = {
-  Tech: '#0078A8',
   Product: '#F97709',
+  Tech: '#0078A8',
+  'CX & Support': '#3E9C8F',
+  Ops: '#B5794A',
   Marketing: '#7A5CA0',
   Other: '#958F8C',
 }
@@ -141,11 +143,10 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-cream">
-      <div className="max-w-6xl mx-auto px-6 py-10">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <div className="flex items-baseline gap-2">
+      {!results ? (
+        <div className="min-h-screen flex flex-col items-center justify-center px-6 py-10">
+          <div className="text-center mb-8">
+            <div className="flex items-baseline justify-center gap-2">
               <span className="text-2xl font-extrabold tracking-tight text-ink">Timeleft</span>
               <span className="text-2xl font-medium text-muted-dark">Review Analyzer</span>
             </div>
@@ -153,14 +154,6 @@ export default function Home() {
               Upload app store reviews → instant, evidence-backed clarity for Ops, Product &amp; Growth.
             </p>
           </div>
-          {results && (
-            <button onClick={resetAll} className="rounded-pill bg-ink text-cream font-semibold text-sm px-5 py-2.5 hover:bg-black transition">
-              ← New upload
-            </button>
-          )}
-        </div>
-
-        {!results ? (
           <UploadCard
             file={file}
             error={error}
@@ -169,7 +162,23 @@ export default function Home() {
             onFileChange={handleFileChange}
             onAnalyze={handleAnalyze}
           />
-        ) : (
+        </div>
+      ) : (
+        <div className="max-w-6xl mx-auto px-6 py-10">
+          <div className="flex items-center justify-between mb-8">
+            <div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-extrabold tracking-tight text-ink">Timeleft</span>
+                <span className="text-2xl font-medium text-muted-dark">Review Analyzer</span>
+              </div>
+              <p className="text-muted-dark mt-1">
+                Upload app store reviews → instant, evidence-backed clarity for Ops, Product &amp; Growth.
+              </p>
+            </div>
+            <button onClick={resetAll} className="rounded-pill bg-ink text-cream font-semibold text-sm px-5 py-2.5 hover:bg-black transition">
+              ← New upload
+            </button>
+          </div>
           <Dashboard
             results={results}
             filteredThemes={filteredThemes}
@@ -186,8 +195,8 @@ export default function Home() {
             copied={copied}
             setCopied={setCopied}
           />
-        )}
-      </div>
+        </div>
+      )}
     </main>
   )
 }
@@ -204,7 +213,7 @@ function UploadCard(props: {
 }) {
   const { file, error, parseInfo, loading, onFileChange, onAnalyze } = props
   return (
-    <div className="bg-white rounded-3xl border border-tan p-10 max-w-2xl">
+    <div className="bg-white rounded-3xl border border-tan p-10 w-full max-w-2xl">
       <div className="border-2 border-dashed border-tan rounded-2xl p-10 text-center hover:border-accent transition">
         <input type="file" accept=".csv" onChange={onFileChange} className="hidden" id="csv-input" />
         <label htmlFor="csv-input" className="cursor-pointer block">
