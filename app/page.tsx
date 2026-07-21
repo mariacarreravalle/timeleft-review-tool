@@ -1,14 +1,8 @@
 'use client'
 
 import { useState } from 'react'
-import Papa from 'papaparse'
-import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts'
-
-interface Review {
-  date: string
-  rating: number
-  text: string
-}
+import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { parseReviewsCsv } from './lib/parseReviews'
 
 interface Theme {
   name: string
@@ -31,6 +25,8 @@ export default function Home() {
   const [error, setError] = useState('')
   const [results, setResults] = useState<AnalysisResult | null>(null)
   const [file, setFile] = useState<File | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [parseInfo, setParseInfo] = useState('')
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
@@ -51,21 +47,25 @@ export default function Home() {
 
     try {
       const text = await file.text()
-      const parsed = Papa.parse(text, { header: true, skipEmptyLines: true })
-
-      const reviews: Review[] = parsed.data
-        .map((row: any) => ({
-          date: row['Submission date'] || row['Date'] || '',
-          rating: parseInt(row['Rating']) || 0,
-          text: row['Translated review'] || row['Review'] || ''
-        }))
-        .filter(r => r.text.trim().length > 0)
+      const { reviews, detectedColumns, totalRows } = parseReviewsCsv(text)
 
       if (reviews.length === 0) {
-        setError('No valid reviews found in CSV')
+        setError('No review text found. Make sure the CSV has a column like "Review", "Comment", or "Feedback".')
         setLoading(false)
         return
       }
+
+      if (!detectedColumns.reviewText && !detectedColumns.translatedText) {
+        setError('Could not find a review text column in this CSV.')
+        setLoading(false)
+        return
+      }
+
+      setParseInfo(
+        `Parsed ${reviews.length} of ${totalRows} rows · text: "${detectedColumns.translatedText || detectedColumns.reviewText}"` +
+        (detectedColumns.rating ? ` · rating: "${detectedColumns.rating}"` : '') +
+        (detectedColumns.date ? ` · date: "${detectedColumns.date}"` : '')
+      )
 
       const response = await fetch('/api/analyze', {
         method: 'POST',
@@ -83,17 +83,43 @@ export default function Home() {
     }
   }
 
+  const handleCopy = () => {
+    if (!results) return
+    navigator.clipboard.writeText(results.slackDraft)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
   return (
-    <main className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-6">
-      <div className="max-w-6xl mx-auto">
-        <div className="mb-8">
-          <h1 className="text-4xl font-bold text-slate-900 mb-2">Timeleft Review Analyzer</h1>
-          <p className="text-slate-600">Upload CSV of app reviews → Get themes, sentiment, severity, and trends</p>
+    <main className="min-h-screen bg-cream">
+      <div className="max-w-5xl mx-auto px-6 py-10">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-10">
+          <div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-2xl font-extrabold tracking-tight text-ink">Timeleft</span>
+              <span className="text-2xl font-medium text-muted-dark">Review Analyzer</span>
+            </div>
+            <p className="text-muted-dark mt-1">
+              Upload app store reviews. Get themes, sentiment, severity, and trends — no spreadsheets required.
+            </p>
+          </div>
+          {results && (
+            <button
+              onClick={() => {
+                setResults(null)
+                setFile(null)
+              }}
+              className="rounded-pill bg-ink text-cream font-semibold text-sm px-5 py-2.5 hover:bg-black transition"
+            >
+              ← New upload
+            </button>
+          )}
         </div>
 
         {!results ? (
-          <div className="bg-white rounded-lg shadow-lg p-8 max-w-2xl">
-            <div className="border-2 border-dashed border-slate-300 rounded-lg p-8 text-center hover:border-slate-400 transition">
+          <div className="bg-white rounded-3xl border border-tan p-10 max-w-2xl">
+            <div className="border-2 border-dashed border-tan rounded-2xl p-10 text-center hover:border-accent transition">
               <input
                 type="file"
                 accept=".csv"
@@ -103,59 +129,49 @@ export default function Home() {
               />
               <label htmlFor="csv-input" className="cursor-pointer block">
                 <div className="text-5xl mb-4">📊</div>
-                <p className="text-lg font-medium text-slate-900 mb-2">
-                  {file ? `Selected: ${file.name}` : 'Drag & drop CSV or click to select'}
+                <p className="text-lg font-semibold text-ink mb-2">
+                  {file ? file.name : 'Drag & drop CSV, or click to select'}
                 </p>
-                <p className="text-sm text-slate-500">
-                  Columns: Review/Translated review, Rating, Submission date
+                <p className="text-sm text-muted-dark">
+                  Needs: Review / Translated review, Rating, Submission date
                 </p>
               </label>
             </div>
 
-            {error && <p className="text-red-600 mt-4 text-center">{error}</p>}
+            {error && <p className="text-red-600 mt-4 text-center font-medium">{error}</p>}
+            {parseInfo && !error && <p className="text-xs text-muted-dark mt-4 text-center">{parseInfo}</p>}
 
             <button
               onClick={handleAnalyze}
               disabled={!file || loading}
-              className="w-full mt-6 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-400 text-white font-semibold py-3 px-6 rounded-lg transition"
+              className="w-full mt-6 rounded-pill bg-ink hover:bg-black disabled:bg-muted disabled:cursor-not-allowed text-cream font-semibold py-3.5 px-6 transition"
             >
-              {loading ? 'Analyzing...' : 'Analyze Reviews'}
+              {loading ? 'Analyzing…' : 'Analyze reviews'}
             </button>
           </div>
         ) : (
           <div className="space-y-6">
-            <button
-              onClick={() => {
-                setResults(null)
-                setFile(null)
-              }}
-              className="text-blue-600 hover:text-blue-700 font-medium text-sm"
-            >
-              ← Upload another CSV
-            </button>
-
             {/* Severity-ranked themes */}
-            <div className="bg-white rounded-lg shadow p-6">
-              <h2 className="text-2xl font-bold text-slate-900 mb-4">🔥 Top Issues by Severity</h2>
-              <div className="space-y-3">
+            <div className="bg-white rounded-3xl border border-tan p-7">
+              <h2 className="text-xl font-bold text-ink mb-1">Top issues, ranked by severity</h2>
+              <p className="text-sm text-muted-dark mb-5">Volume × sentiment × urgency signals (cancel, refund, crash, etc.)</p>
+              <div className="space-y-4">
                 {results.themes.slice(0, 5).map((theme, i) => (
-                  <div key={i} className="border-l-4 border-red-500 pl-4 py-3">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <p className="font-semibold text-slate-900">{theme.name}</p>
-                        <p className="text-sm text-slate-600 mt-1">
-                          {theme.volume} reviews • Sentiment: {theme.sentiment > 0 ? '😊' : theme.sentiment < 0 ? '😞' : '😐'} ({theme.sentiment.toFixed(2)})
+                  <div key={i} className="flex justify-between items-start gap-4 rounded-2xl border border-tan p-5">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-ink">{theme.name}</p>
+                      <p className="text-sm text-muted-dark mt-1">
+                        {theme.volume} reviews · sentiment {theme.sentiment > 0 ? '+' : ''}{theme.sentiment.toFixed(2)}
+                      </p>
+                      {theme.quotes.length > 0 && (
+                        <p className="text-sm italic text-muted-dark mt-2 truncate">
+                          "{theme.quotes[0].slice(0, 90)}…"
                         </p>
-                        {theme.quotes.length > 0 && (
-                          <p className="text-sm italic text-slate-500 mt-2">
-                            "{theme.quotes[0].slice(0, 80)}..."
-                          </p>
-                        )}
-                      </div>
-                      <div className="text-right">
-                        <p className="text-2xl font-bold text-red-600">{(theme.severity * 100).toFixed(0)}</p>
-                        <p className="text-xs text-slate-500">severity</p>
-                      </div>
+                      )}
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-3xl font-extrabold text-accent">{(theme.severity * 100).toFixed(0)}</p>
+                      <p className="text-xs text-muted-dark">severity</p>
                     </div>
                   </div>
                 ))}
@@ -164,50 +180,50 @@ export default function Home() {
 
             {/* Charts */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Ratings distribution */}
-              <div className="bg-white rounded-lg shadow p-6">
-                <h3 className="font-bold text-slate-900 mb-4">Rating Distribution</h3>
-                <ResponsiveContainer width="100%" height={250}>
+              <div className="bg-white rounded-3xl border border-tan p-7">
+                <h3 className="font-bold text-ink mb-4">Rating distribution</h3>
+                <ResponsiveContainer width="100%" height={240}>
                   <BarChart data={results.overallRatings}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="rating" />
-                    <YAxis />
-                    <Tooltip />
-                    <Bar dataKey="count" fill="#3b82f6" />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#DED7CA" />
+                    <XAxis dataKey="rating" stroke="#666362" />
+                    <YAxis stroke="#666362" />
+                    <Tooltip contentStyle={{ borderRadius: 12, border: '1px solid #DED7CA' }} />
+                    <Bar dataKey="count" fill="#F97709" radius={[6, 6, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
 
-              {/* Volume over time */}
-              <div className="bg-white rounded-lg shadow p-6">
-                <h3 className="font-bold text-slate-900 mb-4">Review Volume Over Time</h3>
-                <ResponsiveContainer width="100%" height={250}>
+              <div className="bg-white rounded-3xl border border-tan p-7">
+                <h3 className="font-bold text-ink mb-4">Review volume over time</h3>
+                <ResponsiveContainer width="100%" height={240}>
                   <LineChart data={results.volumeOverTime}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="date" />
-                    <YAxis />
-                    <Tooltip />
-                    <Line type="monotone" dataKey="count" stroke="#8b5cf6" strokeWidth={2} dot={false} />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#DED7CA" />
+                    <XAxis dataKey="date" stroke="#666362" />
+                    <YAxis stroke="#666362" />
+                    <Tooltip contentStyle={{ borderRadius: 12, border: '1px solid #DED7CA' }} />
+                    <Line type="monotone" dataKey="count" stroke="#0078A8" strokeWidth={2.5} dot={false} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
             </div>
 
             {/* Slack draft */}
-            <div className="bg-white rounded-lg shadow p-6">
-              <h2 className="text-xl font-bold text-slate-900 mb-3">📱 Draft Slack Update</h2>
-              <div className="bg-slate-50 border border-slate-200 rounded p-4 font-mono text-sm text-slate-700 whitespace-pre-wrap max-h-48 overflow-y-auto">
+            <div className="bg-white rounded-3xl border border-tan p-7">
+              <h2 className="text-xl font-bold text-ink mb-3">Draft Slack update</h2>
+              <div className="bg-ink rounded-2xl p-5 font-mono text-sm text-cream whitespace-pre-wrap max-h-48 overflow-y-auto">
                 {results.slackDraft}
               </div>
-              <button
-                onClick={() => navigator.clipboard.writeText(results.slackDraft)}
-                className="mt-3 bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded text-sm transition"
-              >
-                Copy to clipboard
-              </button>
-              <p className="text-xs text-slate-500 mt-2">
-                Ready to paste into MAKE/Zapier workflow or manually send to Slack
-              </p>
+              <div className="flex items-center gap-3 mt-4">
+                <button
+                  onClick={handleCopy}
+                  className="rounded-pill bg-accent hover:bg-orange-600 text-white font-semibold py-2.5 px-5 text-sm transition"
+                >
+                  {copied ? 'Copied ✓' : 'Copy to clipboard'}
+                </button>
+                <p className="text-xs text-muted-dark">
+                  Paste into your MAKE/Zapier workflow, or send to Slack directly
+                </p>
+              </div>
             </div>
           </div>
         )}
