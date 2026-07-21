@@ -1,13 +1,41 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-// Vercel kills serverless functions at 10s by default (Hobby plan). The Claude
-// call can take 10-30s, so raise the ceiling or the request 504s in production.
+// Vercel kills serverless functions at 10s by default (Hobby plan). Classifying
+// all reviews can take 15-30s, so raise the ceiling or the request 504s.
 export const maxDuration = 60
 export const runtime = 'nodejs'
 
-// Model is env-overridable. Default to Sonnet: theme extraction over ~50 review
-// snippets doesn't need Opus, and Sonnet cuts the wait roughly in half.
+// Model is env-overridable. Default to Sonnet: fast + good enough for clustering.
 const ANALYSIS_MODEL = process.env.ANALYSIS_MODEL || 'claude-sonnet-5'
+
+const TEAMS = ['Marketing', 'Tech', 'Product', 'Other'] as const
+type Team = typeof TEAMS[number]
+
+// Structured-output schema: forces the model to return valid, parseable JSON.
+// Without this, verbatim quotes containing " characters break JSON.parse.
+const OUTPUT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['themes'],
+  properties: {
+    themes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['name', 'count', 'sentiment', 'team', 'action', 'quotes'],
+        properties: {
+          name: { type: 'string' },
+          count: { type: 'integer' },
+          sentiment: { type: 'number' },
+          team: { type: 'string', enum: TEAMS as unknown as string[] },
+          action: { type: 'string' },
+          quotes: { type: 'array', items: { type: 'string' } }
+        }
+      }
+    }
+  }
+} as const
 
 interface Review {
   date: string
@@ -17,11 +45,20 @@ interface Review {
 
 interface Theme {
   name: string
-  volume: number
-  sentiment: number
-  severity: number
-  quotes: string[]
-  trend: number
+  count: number        // reviews Claude classified into this theme (grounded in all reviews)
+  percentage: number   // count / totalReviews * 100
+  sentiment: number    // -1..1, AI text sentiment for the theme
+  impact: number       // 0..1 ranking score (volume-weighted, negativity + urgency)
+  team: Team
+  action: string
+  quotes: string[]     // up to 3 verbatim quotes
+}
+
+interface SentimentBreakdown {
+  negative: number
+  neutral: number
+  positive: number
+  unrated: number
 }
 
 export async function POST(req: NextRequest) {
@@ -39,7 +76,6 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // Call Claude to extract themes and sentiment
     const claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -50,15 +86,12 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model: ANALYSIS_MODEL,
         max_tokens: 4096,
-        // This is a structured JSON extraction, not a reasoning task — turn off
-        // Sonnet 5's default adaptive thinking to cut latency and variance.
+        // Structured extraction, not a reasoning task — disable Sonnet's default
+        // adaptive thinking to cut latency and variance.
         thinking: { type: 'disabled' },
-        messages: [
-          {
-            role: 'user',
-            content: buildAnalysisPrompt(reviews)
-          }
-        ]
+        // Guarantee valid JSON matching our schema (quotes contain " chars).
+        output_config: { format: { type: 'json_schema', schema: OUTPUT_SCHEMA } },
+        messages: [{ role: 'user', content: buildAnalysisPrompt(reviews) }]
       })
     })
 
@@ -69,141 +102,138 @@ export async function POST(req: NextRequest) {
     }
 
     const claudeData = await claudeResponse.json() as any
-    // Don't assume content[0] is text — models with thinking on (e.g. Sonnet 5
-    // by default) put a thinking block first. Grab the actual text block(s).
+    // Don't assume content[0] is text — models with thinking on put a thinking
+    // block first. Grab the actual text block(s).
     const analysisText = (claudeData.content || [])
       .filter((b: any) => b.type === 'text')
       .map((b: any) => b.text)
       .join('\n')
 
-    // Parse Claude's response
-    const themes = parseThemesFromResponse(analysisText, reviews)
-    const overallRatings = buildRatingChart(reviews)
-    const volumeOverTime = buildVolumeChart(reviews)
-    const slackDraft = buildSlackMessage(themes)
+    const totalReviews = reviews.length
+    const themes = parseThemesFromResponse(analysisText, totalReviews)
+
+    if (themes.length === 0) {
+      return NextResponse.json(
+        { error: 'The analysis came back empty. Try again — if it persists, the review text may be too short to cluster.' },
+        { status: 502 }
+      )
+    }
 
     return NextResponse.json({
+      totalReviews,
+      sentiment: buildSentimentBreakdown(reviews),
       themes,
-      overallRatings,
-      volumeOverTime,
-      slackDraft
+      overallRatings: buildRatingChart(reviews),
+      volumeOverTime: buildVolumeChart(reviews)
     })
   } catch (error) {
     console.error('Analysis error:', error)
-    return NextResponse.json(
-      { error: 'Analysis failed' },
-      { status: 500 }
-    )
+    return NextResponse.json({ error: 'Analysis failed' }, { status: 500 })
   }
 }
 
 function buildAnalysisPrompt(reviews: Review[]): string {
-  const sampleReviews = reviews.slice(0, 50).map(r => `"${r.text.slice(0, 200)}"`).join('\n')
+  // Send every review (truncated) so theme counts are grounded in the full set,
+  // not extrapolated from a sample.
+  const body = reviews
+    .map((r, i) => `${i + 1} | ${r.rating || '?'}★ | ${r.text.replace(/\s+/g, ' ').slice(0, 240)}`)
+    .join('\n')
 
-  return `You are a product analyst. Analyze these app review excerpts and extract the top themes.
+  return `You are a product analyst at Timeleft (an app that seats strangers together for dinners). Below are ALL ${reviews.length} app-store reviews, one per line as "index | rating | text". Cluster them into 6-8 concrete, actionable themes.
 
-For each theme:
-1. Name it clearly (e.g., "Pricing model complaints", "App stability issues")
-2. Estimate how many reviews mention it (volume out of ${reviews.length})
-3. Provide average sentiment (-1 = very negative, 0 = neutral, +1 = very positive)
-4. List 2-3 representative quotes
+For EACH theme return:
+- "name": specific and actionable (e.g. "Subscription pricing complaints", "App crashes & login bugs") — not a sentiment label like "negative feedback".
+- "count": how many of the ${reviews.length} reviews above mention or express this theme (integer). A review can count toward more than one theme (multi-label). Read them all and be realistic — this drives percentages a team will act on.
+- "sentiment": average sentiment for the theme, -1 (very negative) to +1 (very positive).
+- "team": which internal team should own it — exactly one of "Marketing", "Tech", "Product", "Other". Guidance: app bugs/crashes/performance → Tech; pricing/subscription model, features, matching, cities → Product; brand perception, expectations set by ads, growth → Marketing; billing/refunds/support/ops → Other.
+- "action": one concrete next step for that team, max ~18 words.
+- "quotes": exactly 3 SHORT quotes copied VERBATIM from the reviews above that best evidence this theme.
 
-Focus on actionable themes, not sentiment labels. E.g., "app crashes" not "bad app".
+REVIEWS:
+${body}
 
-Sample reviews:
-${sampleReviews}
-
-RESPOND ONLY with valid JSON in this exact format (no markdown, no extra text):
-{
-  "themes": [
-    {
-      "name": "Theme Name",
-      "volume": 45,
-      "sentiment": -0.8,
-      "quotes": ["exact quote from review", "another quote"]
-    }
-  ]
+Respond with ONLY valid JSON, no markdown:
+{"themes":[{"name":"...","count":120,"sentiment":-0.8,"team":"Product","action":"...","quotes":["...","...","..."]}]}`
 }
 
-Extract 5-8 themes. Be specific.`
-}
-
-function parseThemesFromResponse(text: string, reviews: Review[]): Theme[] {
+function parseThemesFromResponse(text: string, total: number): Theme[] {
   try {
-    // Remove markdown code blocks if present
-    const cleanedText = text.replace(/```json\n?|\n?```/g, '').trim()
-    const parsed = JSON.parse(cleanedText)
+    const cleaned = text.replace(/```json\n?|\n?```/g, '').trim()
+    const parsed = JSON.parse(cleaned)
 
-    return parsed.themes.map((t: any) => ({
-      name: t.name,
-      volume: t.volume,
-      sentiment: t.sentiment,
-      severity: calculateSeverity(t.volume, t.sentiment, reviews.length, t.quotes || []),
-      quotes: t.quotes || [],
-      trend: 0 // Would calculate if we had prior window data
-    })).sort((a: Theme, b: Theme) => b.severity - a.severity)
+    return (parsed.themes || [])
+      .map((t: any): Theme => {
+        const count = Math.min(Math.max(Math.round(t.count) || 0, 0), total)
+        const sentiment = clamp(Number(t.sentiment) || 0, -1, 1)
+        const quotes = Array.isArray(t.quotes) ? t.quotes.slice(0, 3) : []
+        return {
+          name: String(t.name || 'Untitled theme'),
+          count,
+          percentage: total > 0 ? Math.round((count / total) * 100) : 0,
+          sentiment,
+          impact: calculateImpact(count, sentiment, total, quotes),
+          team: normalizeTeam(t.team),
+          action: String(t.action || '').trim(),
+          quotes
+        }
+      })
+      .sort((a: Theme, b: Theme) => b.impact - a.impact)
   } catch (err) {
     console.error('Parse error:', err)
     return []
   }
 }
 
-function calculateSeverity(volume: number, sentiment: number, total: number, quotes: string[]): number {
-  const volumeScore = Math.min(volume / total, 1) // 0-1
-  const sentimentScore = Math.abs(sentiment) // Neutral (0) is less severe, extreme is more severe
-  const urgencyKeywords = ['cancel', 'refund', 'uninstall', 'waste', 'scam', 'bug', 'crash', 'error']
-  const hasUrgency = quotes.some(q => urgencyKeywords.some(kw => q.toLowerCase().includes(kw)))
-  const urgencyBoost = hasUrgency ? 0.2 : 0
+// Urgency is volume-led, amplified by negativity and hard-signal keywords.
+function calculateImpact(count: number, sentiment: number, total: number, quotes: string[]): number {
+  const volumeShare = total > 0 ? count / total : 0
+  const negativity = sentiment < 0 ? -sentiment : 0
+  const urgencyKeywords = ['cancel', 'refund', 'uninstall', 'waste', 'scam', 'bug', 'crash', 'error', 'charge', 'unsubscribe']
+  const hasUrgency = quotes.some(q => urgencyKeywords.some(kw => String(q).toLowerCase().includes(kw)))
+  return clamp(volumeShare * 0.6 + negativity * 0.25 + (hasUrgency ? 0.15 : 0), 0, 1)
+}
 
-  return Math.min(volumeScore * 0.5 + sentimentScore * 0.3 + urgencyBoost, 1)
+function normalizeTeam(raw: any): Team {
+  const s = String(raw || '').trim().toLowerCase()
+  const match = TEAMS.find(t => t.toLowerCase() === s)
+  return match || 'Other'
+}
+
+// Sentiment top-line is derived from the actual 1-5 star ratings (ground truth),
+// not AI text sentiment: 1-2 negative, 3 neutral, 4-5 positive.
+function buildSentimentBreakdown(reviews: Review[]): SentimentBreakdown {
+  const b: SentimentBreakdown = { negative: 0, neutral: 0, positive: 0, unrated: 0 }
+  for (const r of reviews) {
+    if (r.rating >= 4) b.positive++
+    else if (r.rating === 3) b.neutral++
+    else if (r.rating >= 1) b.negative++
+    else b.unrated++
+  }
+  return b
 }
 
 function buildRatingChart(reviews: Review[]): Array<{ rating: number; count: number }> {
   const counts: { [key: number]: number } = {}
   reviews.forEach(r => {
-    if (r.rating > 0) {
-      counts[r.rating] = (counts[r.rating] || 0) + 1
-    }
+    if (r.rating > 0) counts[r.rating] = (counts[r.rating] || 0) + 1
   })
-
-  return [1, 2, 3, 4, 5].map(rating => ({
-    rating,
-    count: counts[rating] || 0
-  }))
+  return [1, 2, 3, 4, 5].map(rating => ({ rating, count: counts[rating] || 0 }))
 }
 
 function buildVolumeChart(reviews: Review[]): Array<{ date: string; count: number }> {
   const byDate: { [key: string]: number } = {}
-
   reviews.forEach(r => {
     if (r.date) {
-      const date = r.date.split('T')[0] // YYYY-MM-DD
+      const date = r.date.split('T')[0]
       byDate[date] = (byDate[date] || 0) + 1
     }
   })
-
   return Object.entries(byDate)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([date, count]) => ({ date, count }))
-    .slice(-30) // Last 30 days
+    .slice(-30)
 }
 
-function buildSlackMessage(themes: Theme[]): string {
-  const lines = ['📊 *App Review Analysis*', '']
-
-  const topIssues = themes.slice(0, 3)
-  if (topIssues.length > 0) {
-    lines.push('*🔥 Top 3 Issues:*')
-    topIssues.forEach((t, i) => {
-      lines.push(
-        `${i + 1}. *${t.name}*`,
-        `   • ${t.volume} ${t.volume === 1 ? 'review' : 'reviews'} • Sentiment: ${t.sentiment > 0 ? '+' : ''}${t.sentiment.toFixed(2)}`,
-        t.quotes.length > 0 ? `   • "${t.quotes[0].slice(0, 100)}..."` : '',
-        ''
-      )
-    })
-  }
-
-  lines.push('→ Full analysis: [view in dashboard]')
-  return lines.join('\n')
+function clamp(n: number, lo: number, hi: number): number {
+  return Math.min(Math.max(n, lo), hi)
 }
