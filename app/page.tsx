@@ -1,8 +1,12 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { parseReviewsCsv, type Review } from './lib/parseReviews'
+import {
+  hashText, findCached, saveToCache, loadActive, saveActive, clearActive,
+  type CachedAnalysis, type SavedFilters
+} from './lib/persistence'
 
 type Team = 'Product' | 'Tech' | 'CX & Support' | 'Ops' | 'Marketing' | 'Other'
 
@@ -69,6 +73,18 @@ const IMPACT_FORMULA_TOOLTIP = 'Impact = 60% volume share + 25% negativity (how 
 
 function formatDate(ms: number): string {
   return new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+function formatRelativeTime(iso: string): string {
+  const ms = Date.now() - Date.parse(iso)
+  if (isNaN(ms) || ms < 0) return 'recently'
+  const mins = Math.round(ms / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins} min ago`
+  const hours = Math.round(mins / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.round(hours / 24)
+  return `${days}d ago`
 }
 
 function computeDateRange(reviews: Review[]): { earliest: string; latest: string } | null {
@@ -256,6 +272,29 @@ export default function Home() {
   const [activeSlackTeam, setActiveSlackTeam] = useState<Team | null>(null)
   const [copied, setCopied] = useState(false)
 
+  // persistence: which cached analysis (by CSV hash) is currently open, and
+  // whether there's a previous session on this browser worth offering to
+  // resume. See app/lib/persistence.ts.
+  const [activeHash, setActiveHash] = useState<string | null>(null)
+  const [resumeCandidate, setResumeCandidate] = useState<{ entry: CachedAnalysis; filters: SavedFilters } | null>(null)
+
+  // On mount, check for a resumable session from a previous visit (survives
+  // a refresh) — offered, not auto-applied, so a deliberate fresh start isn't
+  // silently overridden.
+  useEffect(() => {
+    const active = loadActive()
+    if (!active) return
+    const cached = findCached(active.csvHash)
+    if (cached) setResumeCandidate({ entry: cached, filters: active.filters })
+  }, [])
+
+  // Keep the saved session's filters in sync with the current ones while an
+  // analysis is open, so a refresh restores not just the data but the view.
+  useEffect(() => {
+    if (!activeHash) return
+    saveActive(activeHash, { country, city, timeframe, sentimentFilter, teamFilter, search })
+  }, [activeHash, country, city, timeframe, sentimentFilter, teamFilter, search])
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
     if (f) {
@@ -274,6 +313,27 @@ export default function Home() {
 
     try {
       const text = await file.text()
+      const csvHash = hashText(text)
+
+      // Same file already analyzed on this browser — reuse the exact same
+      // taxonomy instead of re-clustering. This is what makes repeat uploads
+      // of the same export comparable rather than independently reworded.
+      const cached = findCached(csvHash)
+      if (cached) {
+        setReviews(cached.reviews)
+        setTaxonomy(cached.taxonomy as ThemeTaxonomy[])
+        setHasCityData(cached.hasCityData)
+        setCountry('all')
+        setCity('all')
+        setTimeframe('all')
+        setActiveHash(csvHash)
+        saveActive(csvHash, { country: 'all', city: 'all', timeframe: 'all', sentimentFilter: 'all', teamFilter: 'all', search: '' })
+        setParseInfo(`✓ Recognized this exact file from a previous analysis (${cached.reviews.length} reviews, analyzed ${formatRelativeTime(cached.analyzedAt)}) — reused instantly, no re-analysis needed.`)
+        setResumeCandidate(null)
+        setLoading(false)
+        return
+      }
+
       const { reviews: parsedReviews, detectedColumns, totalRows } = parseReviewsCsv(text)
 
       if (parsedReviews.length === 0 || (!detectedColumns.reviewText && !detectedColumns.translatedText)) {
@@ -305,11 +365,45 @@ export default function Home() {
       setCountry('all')
       setCity('all')
       setTimeframe('all')
+
+      saveToCache({
+        csvHash,
+        filename: file.name,
+        analyzedAt: new Date().toISOString(),
+        reviews: parsedReviews,
+        taxonomy: data.themes,
+        hasCityData: !!detectedColumns.city
+      })
+      setActiveHash(csvHash)
+      saveActive(csvHash, { country: 'all', city: 'all', timeframe: 'all', sentimentFilter: 'all', teamFilter: 'all', search: '' })
+      setResumeCandidate(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Analysis failed')
     } finally {
       setLoading(false)
     }
+  }
+
+  const resumeSession = () => {
+    if (!resumeCandidate) return
+    const { entry, filters } = resumeCandidate
+    setReviews(entry.reviews)
+    setTaxonomy(entry.taxonomy as ThemeTaxonomy[])
+    setHasCityData(entry.hasCityData)
+    setCountry(filters.country)
+    setCity(filters.city)
+    setTimeframe(filters.timeframe as Timeframe)
+    setSentimentFilter(filters.sentimentFilter as SentimentFilter)
+    setTeamFilter(filters.teamFilter as TeamFilter)
+    setSearch(filters.search)
+    setActiveHash(entry.csvHash)
+    setParseInfo(`✓ Resumed previous analysis (${entry.reviews.length} reviews, analyzed ${formatRelativeTime(entry.analyzedAt)}).`)
+    setResumeCandidate(null)
+  }
+
+  const dismissResume = () => {
+    clearActive()
+    setResumeCandidate(null)
   }
 
   const resetAll = () => {
@@ -324,6 +418,8 @@ export default function Home() {
     setCountry('all')
     setCity('all')
     setTimeframe('all')
+    setActiveHash(null)
+    clearActive()
   }
 
   // Country list (non-empty, by volume) and the cities within the picked country.
@@ -382,6 +478,24 @@ export default function Home() {
               Upload app store reviews → instant, evidence-backed clarity for Ops, Product &amp; Growth.
             </p>
           </div>
+          {resumeCandidate && (
+            <div className="w-full max-w-2xl mb-4 rounded-2xl border border-tan bg-white p-5 flex items-center justify-between gap-4">
+              <div>
+                <p className="font-semibold text-ink">Resume your last analysis?</p>
+                <p className="text-sm text-muted-dark">
+                  {resumeCandidate.entry.filename} · {resumeCandidate.entry.reviews.length} reviews · analyzed {formatRelativeTime(resumeCandidate.entry.analyzedAt)}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button onClick={dismissResume} className="text-sm font-semibold text-muted-dark hover:text-ink transition px-3 py-2">
+                  Start fresh
+                </button>
+                <button onClick={resumeSession} className="rounded-pill bg-ink text-cream font-semibold text-sm px-5 py-2.5 hover:bg-black transition">
+                  Resume
+                </button>
+              </div>
+            </div>
+          )}
           <UploadCard
             file={file}
             error={error}
