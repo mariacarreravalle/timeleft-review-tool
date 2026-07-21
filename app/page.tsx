@@ -73,7 +73,11 @@ export default function Home() {
         body: JSON.stringify({ reviews })
       })
 
-      if (!response.ok) throw new Error('Analysis failed')
+      if (!response.ok) {
+        // Surface the real server error instead of a generic message
+        const body = await response.json().catch(() => null)
+        throw new Error(body?.error || `Analysis failed (HTTP ${response.status})`)
+      }
       const data = await response.json()
       setResults(data)
     } catch (err) {
@@ -139,15 +143,30 @@ export default function Home() {
             </div>
 
             {error && <p className="text-red-600 mt-4 text-center font-medium">{error}</p>}
-            {parseInfo && !error && <p className="text-xs text-muted-dark mt-4 text-center">{parseInfo}</p>}
+            {parseInfo && !error && !loading && (
+              <p className="text-xs text-muted-dark mt-4 text-center">✓ {parseInfo}</p>
+            )}
 
-            <button
-              onClick={handleAnalyze}
-              disabled={!file || loading}
-              className="w-full mt-6 rounded-pill bg-ink hover:bg-black disabled:bg-muted disabled:cursor-not-allowed text-cream font-semibold py-3.5 px-6 transition"
-            >
-              {loading ? 'Analyzing…' : 'Analyze reviews'}
-            </button>
+            {loading ? (
+              <div className="mt-6 rounded-2xl border border-tan bg-cream p-6 text-center">
+                <div className="flex items-center justify-center gap-3 mb-2">
+                  <span className="inline-block h-4 w-4 rounded-full border-2 border-accent border-t-transparent animate-spin" />
+                  <span className="font-semibold text-ink">Analysing your reviews…</span>
+                </div>
+                <p className="text-sm text-muted-dark">
+                  Clustering themes, scoring sentiment &amp; severity. This usually takes 10–20 seconds.
+                </p>
+                {parseInfo && <p className="text-xs text-muted-dark mt-3">✓ {parseInfo}</p>}
+              </div>
+            ) : (
+              <button
+                onClick={handleAnalyze}
+                disabled={!file}
+                className="w-full mt-6 rounded-pill bg-ink hover:bg-black disabled:bg-muted disabled:cursor-not-allowed text-cream font-semibold py-3.5 px-6 transition"
+              >
+                Analyze reviews
+              </button>
+            )}
           </div>
         ) : (
           <div className="space-y-6">
@@ -161,7 +180,7 @@ export default function Home() {
                     <div className="min-w-0">
                       <p className="font-semibold text-ink">{theme.name}</p>
                       <p className="text-sm text-muted-dark mt-1">
-                        {theme.volume} reviews · sentiment {theme.sentiment > 0 ? '+' : ''}{theme.sentiment.toFixed(2)}
+                        {theme.volume} {theme.volume === 1 ? 'review' : 'reviews'} · sentiment {theme.sentiment > 0 ? '+' : ''}{theme.sentiment.toFixed(2)}
                       </p>
                       {theme.quotes.length > 0 && (
                         <p className="text-sm italic text-muted-dark mt-2 truncate">

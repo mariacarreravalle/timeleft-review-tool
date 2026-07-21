@@ -1,5 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+// Vercel kills serverless functions at 10s by default (Hobby plan). The Claude
+// call can take 10-30s, so raise the ceiling or the request 504s in production.
+export const maxDuration = 60
+export const runtime = 'nodejs'
+
+// Model is env-overridable. Default to Sonnet: theme extraction over ~50 review
+// snippets doesn't need Opus, and Sonnet cuts the wait roughly in half.
+const ANALYSIS_MODEL = process.env.ANALYSIS_MODEL || 'claude-sonnet-5'
+
 interface Review {
   date: string
   rating: number
@@ -24,7 +33,10 @@ export async function POST(req: NextRequest) {
     }
 
     if (!process.env.ANTHROPIC_API_KEY) {
-      return NextResponse.json({ error: 'API key not configured' }, { status: 500 })
+      return NextResponse.json(
+        { error: 'ANTHROPIC_API_KEY is not set. Add it in your .env.local (local) or Vercel project settings (deployed).' },
+        { status: 500 }
+      )
     }
 
     // Call Claude to extract themes and sentiment
@@ -36,8 +48,11 @@ export async function POST(req: NextRequest) {
         'content-type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'claude-opus-4-1-20250805',
+        model: ANALYSIS_MODEL,
         max_tokens: 4096,
+        // This is a structured JSON extraction, not a reasoning task — turn off
+        // Sonnet 5's default adaptive thinking to cut latency and variance.
+        thinking: { type: 'disabled' },
         messages: [
           {
             role: 'user',
@@ -54,7 +69,12 @@ export async function POST(req: NextRequest) {
     }
 
     const claudeData = await claudeResponse.json() as any
-    const analysisText = claudeData.content[0].text
+    // Don't assume content[0] is text — models with thinking on (e.g. Sonnet 5
+    // by default) put a thinking block first. Grab the actual text block(s).
+    const analysisText = (claudeData.content || [])
+      .filter((b: any) => b.type === 'text')
+      .map((b: any) => b.text)
+      .join('\n')
 
     // Parse Claude's response
     const themes = parseThemesFromResponse(analysisText, reviews)
@@ -177,7 +197,7 @@ function buildSlackMessage(themes: Theme[]): string {
     topIssues.forEach((t, i) => {
       lines.push(
         `${i + 1}. *${t.name}*`,
-        `   • ${t.volume} reviews • Sentiment: ${t.sentiment > 0 ? '+' : ''}${t.sentiment.toFixed(2)}`,
+        `   • ${t.volume} ${t.volume === 1 ? 'review' : 'reviews'} • Sentiment: ${t.sentiment > 0 ? '+' : ''}${t.sentiment.toFixed(2)}`,
         t.quotes.length > 0 ? `   • "${t.quotes[0].slice(0, 100)}..."` : '',
         ''
       )

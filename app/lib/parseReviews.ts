@@ -23,38 +23,74 @@ function stripTrailingSemicolon(line: string): string {
   return t.endsWith(';') ? t.slice(0, -1) : t
 }
 
+/** Count the number of `"` characters in a line — used for quote-parity continuation. */
+function countQuotes(line: string): number {
+  let n = 0
+  for (let i = 0; i < line.length; i++) if (line[i] === '"') n++
+  return n
+}
+
 /**
- * Some app-store review exports produce malformed CSV: rows whose text fields
- * contain a comma get the ENTIRE row wrapped in an extra outer quote (doubling
- * every inner quote), while simple rows stay plain. Multi-paragraph reviews are
- * also split across several physical lines using blank ";" filler lines instead
- * of proper CSV multi-line quoting. This reconstructs true logical rows before
- * any field-level parsing happens, using each review's leading ID (UUID or a
- * long numeric app-store id) as the signal for "this line starts a new record".
+ * Reconstruct true logical CSV rows from physical lines. Two formats are handled:
+ *
+ * 1. App-store review exports (most lines start with a UUID or long numeric id):
+ *    rows whose text contains a comma get the ENTIRE row wrapped in an extra outer
+ *    quote (inner quotes doubled), and multi-paragraph reviews are split across
+ *    physical lines with blank ";" filler lines instead of proper CSV quoting. The
+ *    leading id is the only reliable "new record" signal, so we merge everything
+ *    between one id-line and the next.
+ *
+ * 2. Any other CSV: standard handling — one row per physical line, joining lines
+ *    only while a quoted field is left open (odd number of quotes so far).
+ *
+ * We pick the mode by checking whether the file actually uses app-store ids, so a
+ * generic CSV with short/custom ids (or no id column) isn't force-merged.
  */
 function normalizeRawCsv(raw: string): string[] {
-  const rawLines = raw.split(/\r?\n/)
-  const mergedLines: string[] = []
+  const rawLines = raw.split(/\r?\n/).filter(l => l.trim().length > 0)
+  if (rawLines.length === 0) return []
 
-  for (const rawLine of rawLines) {
-    if (rawLine.trim().length === 0) continue
-    const stripped = stripTrailingSemicolon(rawLine)
-    if (ID_LINE_REGEX.test(rawLine) || mergedLines.length === 0) {
-      mergedLines.push(stripped)
-    } else {
-      const content = stripped.trim()
-      if (content.length > 0) {
-        mergedLines[mergedLines.length - 1] += ' ' + content
+  const dataLines = rawLines.slice(1)
+  const idMatches = dataLines.filter(l => ID_LINE_REGEX.test(l)).length
+  const usesIdFormat = dataLines.length > 0 && idMatches / dataLines.length >= 0.3
+
+  if (usesIdFormat) {
+    const merged: string[] = []
+    for (const rawLine of rawLines) {
+      const stripped = stripTrailingSemicolon(rawLine)
+      if (ID_LINE_REGEX.test(rawLine) || merged.length === 0) {
+        merged.push(stripped)
+      } else {
+        const content = stripped.trim()
+        if (content.length > 0) merged[merged.length - 1] += ' ' + content
       }
     }
+    return merged.map(unwrapOuterQuotes)
   }
 
-  return mergedLines.map(row => {
-    if (row.startsWith('"') && row.endsWith('"')) {
-      return row.slice(1, -1).replace(/""/g, '"')
+  // Generic CSV: join lines only while inside an open quoted field.
+  const merged: string[] = []
+  let current = ''
+  let openQuotes = 0
+  for (const rawLine of rawLines) {
+    current = current ? current + '\n' + rawLine : rawLine
+    openQuotes += countQuotes(rawLine)
+    if (openQuotes % 2 === 0) {
+      merged.push(current)
+      current = ''
+      openQuotes = 0
     }
-    return row
-  })
+  }
+  if (current) merged.push(current)
+  return merged
+}
+
+/** Strip an extra outer quote layer (and un-double inner quotes) if present. */
+function unwrapOuterQuotes(row: string): string {
+  if (row.startsWith('"') && row.endsWith('"')) {
+    return row.slice(1, -1).replace(/""/g, '"')
+  }
+  return row
 }
 
 /**
