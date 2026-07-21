@@ -31,6 +31,7 @@ interface AnalysisResult {
   themes: Theme[]
   overallRatings: Array<{ rating: number; count: number }>
   volumeOverTime: Array<{ date: string; count: number }>
+  dateRange: { earliest: string; latest: string } | null
 }
 
 type SentimentFilter = 'all' | 'negative' | 'neutral' | 'positive'
@@ -54,6 +55,35 @@ function countryName(code: string): string {
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.min(Math.max(n, lo), hi)
+}
+
+// Below this many reviews in a region/slice, percentages and rankings swing a
+// lot on a single review — flag it rather than presenting it with the same
+// confidence as a large sample.
+const REGION_SMALL_SAMPLE_MAX = 20
+// A theme resting on this few reviews or fewer gets a low-confidence flag,
+// especially when it's ranked as the top "Most urgent issue".
+const THEME_LOW_CONFIDENCE_MAX = 2
+
+const IMPACT_FORMULA_TOOLTIP = 'Impact = 60% volume share + 25% negativity (how negative the average rating is) + 15% bonus if quotes mention urgent language (cancel, refund, crash, charge, etc.)'
+
+function formatDate(ms: number): string {
+  return new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+function computeDateRange(reviews: Review[]): { earliest: string; latest: string } | null {
+  const times = reviews.map(r => Date.parse(r.date)).filter(t => !isNaN(t))
+  if (!times.length) return null
+  return { earliest: formatDate(Math.min(...times)), latest: formatDate(Math.max(...times)) }
+}
+
+// Pick quotes close to a readable target length rather than the single
+// longest text. The longest review is often a rambling multi-topic wall of
+// text; something near ~120 chars usually reads as one crisp, complete point.
+const QUOTE_TARGET_LENGTH = 120
+function pickQuotes(texts: string[], max = 3): string[] {
+  const ranked = [...texts].sort((a, b) => Math.abs(a.length - QUOTE_TARGET_LENGTH) - Math.abs(b.length - QUOTE_TARGET_LENGTH))
+  return ranked.slice(0, max).map(q => (q.length > 220 ? q.slice(0, 220).trimEnd() + '…' : q))
 }
 
 // Volume-led urgency, amplified by negativity + hard-signal keywords.
@@ -119,7 +149,7 @@ function computeView(reviews: Review[], taxonomy: ThemeTaxonomy[], country: stri
       const avg = ratings.length ? ratings.reduce((a, b) => a + b, 0) / ratings.length : 0
       const sentiment = ratings.length ? clamp((avg - 3) / 2, -1, 1) : 0
       const texts = members.map(i => reviews[i].text)
-      const quotes = [...texts].sort((a, b) => b.length - a.length).slice(0, 3).map(q => q.slice(0, 220))
+      const quotes = pickQuotes(texts)
       return {
         name: t.name,
         team: t.team,
@@ -139,8 +169,44 @@ function computeView(reviews: Review[], taxonomy: ThemeTaxonomy[], country: stri
     sentiment: sentimentBreakdown(regionReviews),
     themes,
     overallRatings: ratingChart(regionReviews),
-    volumeOverTime: volumeChart(regionReviews)
+    volumeOverTime: volumeChart(regionReviews),
+    dateRange: computeDateRange(regionReviews)
   }
+}
+
+interface TrendData {
+  priorTotal: number
+  priorCounts: Map<string, number> // theme name -> count in the prior equivalent window
+}
+
+// Compares the current timeframe window against the immediately preceding
+// window of equal length (same region), so a spike is visible without leaving
+// the dashboard. There's no natural "prior period" for the 'all' timeframe, so
+// trend is only available once a specific window is selected.
+function computeTrend(reviews: Review[], taxonomy: ThemeTaxonomy[], country: string, city: string, timeframe: Timeframe): TrendData | null {
+  if (timeframe === 'all') return null
+  const windowMs = TIMEFRAME_DAYS[timeframe] * 86400000
+  const times = reviews.map(r => Date.parse(r.date)).filter(t => !isNaN(t))
+  if (!times.length) return null
+
+  const latest = Math.max(...times)
+  const currentCutoff = latest - windowMs
+  const priorStart = latest - 2 * windowMs
+
+  const inRegion = (r: Review) => (country === 'all' || r.country === country) && (city === 'all' || r.city === city)
+
+  const priorIdx = new Set<number>()
+  reviews.forEach((r, i) => {
+    if (!inRegion(r)) return
+    const t = Date.parse(r.date)
+    if (isNaN(t) || t < priorStart || t >= currentCutoff) return
+    priorIdx.add(i)
+  })
+
+  const priorCounts = new Map<string, number>()
+  taxonomy.forEach(t => priorCounts.set(t.name, t.reviewIndexes.filter(i => priorIdx.has(i)).length))
+
+  return { priorTotal: priorIdx.size, priorCounts }
 }
 
 const TEAM_DOT: Record<Team, string> = {
@@ -280,6 +346,13 @@ export default function Home() {
     [taxonomy, reviews, country, city, timeframe]
   )
 
+  // Prior-period comparison for the same region, only meaningful once a
+  // specific timeframe window is picked (see computeTrend).
+  const trend = useMemo(
+    () => (taxonomy ? computeTrend(reviews, taxonomy, country, city, timeframe) : null),
+    [taxonomy, reviews, country, city, timeframe]
+  )
+
   const filteredThemes = useMemo(() => {
     if (!view) return []
     const q = search.trim().toLowerCase()
@@ -330,9 +403,17 @@ export default function Home() {
                 Upload app store reviews → instant, evidence-backed clarity for Ops, Product &amp; Growth.
               </p>
             </div>
-            <button onClick={resetAll} className="rounded-pill bg-ink text-cream font-semibold text-sm px-5 py-2.5 hover:bg-black transition">
-              ← New upload
-            </button>
+            <div className="flex items-center gap-2">
+              <ExportReportButton
+                results={view}
+                filteredThemes={filteredThemes}
+                trend={trend}
+                regionLabel={`${country === 'all' ? 'All countries' : countryName(country)}${city !== 'all' ? ` · ${city}` : ''}${timeframe !== 'all' ? ` · ${TIMEFRAME_LABEL[timeframe]}` : ''}`}
+              />
+              <button onClick={resetAll} className="rounded-pill bg-ink text-cream font-semibold text-sm px-5 py-2.5 hover:bg-black transition">
+                ← New upload
+              </button>
+            </div>
           </div>
 
           <RegionFilter
@@ -352,6 +433,7 @@ export default function Home() {
           <Dashboard
             results={view}
             filteredThemes={filteredThemes}
+            trend={trend}
             search={search}
             setSearch={setSearch}
             sentimentFilter={sentimentFilter}
@@ -501,6 +583,7 @@ function RegionFilter(props: {
 function Dashboard(props: {
   results: AnalysisResult
   filteredThemes: Theme[]
+  trend: TrendData | null
   search: string
   setSearch: (s: string) => void
   sentimentFilter: SentimentFilter
@@ -515,16 +598,23 @@ function Dashboard(props: {
   setCopied: (b: boolean) => void
 }) {
   const {
-    results, filteredThemes, search, setSearch, sentimentFilter, setSentimentFilter,
+    results, filteredThemes, trend, search, setSearch, sentimentFilter, setSentimentFilter,
     teamFilter, setTeamFilter, expanded, setExpanded, activeSlackTeam, setActiveSlackTeam, copied, setCopied,
   } = props
 
   const total = results.totalReviews
   const topUrgent = results.themes[0] // already ranked by impact
   const rated = results.sentiment.negative + results.sentiment.neutral + results.sentiment.positive
+  const volumeDelta = trend && trend.priorTotal > 0 ? total - trend.priorTotal : null
 
   return (
     <div className="space-y-6">
+      {total > 0 && total < REGION_SMALL_SAMPLE_MAX && (
+        <div className="rounded-2xl border border-amber-300 bg-amber-50 px-5 py-3 text-sm text-amber-900">
+          <span className="font-semibold">⚠ Small sample ({total} reviews in this view).</span> Percentages and rankings can swing a lot with each new review — treat as directional, not definitive.
+        </div>
+      )}
+
       {/* A. Flash metric row */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <MetricCard label="Reviews processed">
@@ -533,6 +623,20 @@ function Dashboard(props: {
             <span className="text-sm text-muted-dark">reviews</span>
           </div>
           <p className="text-xs text-muted-dark mt-2">{results.themes.length} themes identified</p>
+          {results.dateRange && (
+            <p className="text-[11px] text-muted mt-1">{results.dateRange.earliest} – {results.dateRange.latest}</p>
+          )}
+          {trend && (
+            <p className="text-[11px] font-semibold mt-1">
+              {volumeDelta === null ? (
+                <span className="text-muted-dark">No prior-period data to compare</span>
+              ) : (
+                <span className={volumeDelta > 0 ? 'text-accent' : volumeDelta < 0 ? 'text-info' : 'text-muted-dark'}>
+                  {volumeDelta > 0 ? '▲' : volumeDelta < 0 ? '▼' : '–'} {volumeDelta === 0 ? 'no change' : `${volumeDelta > 0 ? '+' : ''}${volumeDelta}`} vs prior equivalent period
+                </span>
+              )}
+            </p>
+          )}
         </MetricCard>
 
         <MetricCard label="Sentiment (from star ratings)">
@@ -549,7 +653,12 @@ function Dashboard(props: {
               <div className="mt-2 h-1.5 rounded-full bg-tan overflow-hidden">
                 <div className="h-full bg-accent" style={{ width: `${Math.round(topUrgent.impact * 100)}%` }} />
               </div>
-              <p className="text-[11px] text-muted-dark mt-1">urgency {Math.round(topUrgent.impact * 100)}/100 · owner: {topUrgent.team}</p>
+              <p className="text-[11px] text-muted-dark mt-1" title={IMPACT_FORMULA_TOOLTIP}>
+                urgency {Math.round(topUrgent.impact * 100)}/100 ⓘ · owner: {topUrgent.team}
+              </p>
+              {topUrgent.count <= THEME_LOW_CONFIDENCE_MAX && (
+                <p className="text-[11px] text-amber-700 font-semibold mt-1">⚠ Based on very few reviews ({topUrgent.count}) — treat as directional, not definitive.</p>
+              )}
             </div>
           ) : <p className="text-muted-dark">—</p>}
         </MetricCard>
@@ -597,6 +706,8 @@ function Dashboard(props: {
               // rank by position in the full ranked list
               const rank = results.themes.indexOf(theme) + 1
               const isOpen = expanded === rank
+              const priorCount = trend && trend.priorTotal > 0 ? trend.priorCounts.get(theme.name) ?? 0 : null
+              const trendDelta = priorCount === null ? null : theme.count - priorCount
               return (
                 <ThemeRow
                   key={theme.name}
@@ -605,6 +716,7 @@ function Dashboard(props: {
                   total={total}
                   isOpen={isOpen}
                   onToggle={() => setExpanded(isOpen ? null : rank)}
+                  trendDelta={trendDelta}
                 />
               )
             })}
@@ -711,12 +823,13 @@ function FilterGroup({ label, value, onChange, options }: {
   )
 }
 
-function ThemeRow({ theme, rank, total, isOpen, onToggle }: {
+function ThemeRow({ theme, rank, total, isOpen, onToggle, trendDelta }: {
   theme: Theme
   rank: number
   total: number
   isOpen: boolean
   onToggle: () => void
+  trendDelta: number | null
 }) {
   return (
     <div className="rounded-2xl border border-tan overflow-hidden">
@@ -727,6 +840,11 @@ function ThemeRow({ theme, rank, total, isOpen, onToggle }: {
             <span className="font-semibold text-ink">{theme.name}</span>
             <TeamBadge team={theme.team} />
             <span className="text-sm">{sentimentEmoji(theme.sentiment)}</span>
+            {theme.count <= THEME_LOW_CONFIDENCE_MAX && (
+              <span className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-pill px-2 py-0.5 font-semibold">
+                ⚠ low sample (n={theme.count})
+              </span>
+            )}
           </div>
           {/* Evidence sentence — the quantitative "why" */}
           <p className="text-sm text-muted-dark mt-1">
@@ -737,9 +855,14 @@ function ThemeRow({ theme, rank, total, isOpen, onToggle }: {
             <div className="h-full bg-accent" style={{ width: `${Math.round(theme.impact * 100)}%` }} />
           </div>
         </div>
-        <div className="text-right shrink-0">
+        <div className="text-right shrink-0" title={IMPACT_FORMULA_TOOLTIP}>
           <p className="text-2xl font-extrabold text-accent">{Math.round(theme.impact * 100)}</p>
-          <p className="text-[11px] text-muted-dark">impact</p>
+          <p className="text-[11px] text-muted-dark">impact ⓘ</p>
+          {trendDelta !== null && (
+            <p className={`text-[11px] font-semibold mt-0.5 ${trendDelta > 0 ? 'text-accent' : trendDelta < 0 ? 'text-info' : 'text-muted-dark'}`}>
+              {trendDelta > 0 ? '▲' : trendDelta < 0 ? '▼' : '–'} {trendDelta === 0 ? 'no change' : `${trendDelta > 0 ? '+' : ''}${trendDelta} vs prior`}
+            </p>
+          )}
           <p className="text-[11px] text-accent mt-1">{isOpen ? 'Hide quotes ▲' : 'Show quotes ▼'}</p>
         </div>
       </button>
@@ -831,12 +954,76 @@ function TeamActions({ themes, total, activeSlackTeam, setActiveSlackTeam, copie
   )
 }
 
+/* ---------- Export full report (respects all active filters) ---------- */
+
+function ExportReportButton({ results, filteredThemes, trend, regionLabel }: {
+  results: AnalysisResult
+  filteredThemes: Theme[]
+  trend: TrendData | null
+  regionLabel: string
+}) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      onClick={() => {
+        navigator.clipboard.writeText(buildFullReport(regionLabel, results, filteredThemes, trend))
+        setCopied(true)
+        setTimeout(() => setCopied(false), 2000)
+      }}
+      className="rounded-pill bg-white border border-tan text-ink font-semibold text-sm px-5 py-2.5 hover:border-accent transition"
+    >
+      {copied ? 'Copied ✓' : 'Copy full report'}
+    </button>
+  )
+}
+
+function buildFullReport(regionLabel: string, results: AnalysisResult, filteredThemes: Theme[], trend: TrendData | null): string {
+  const rated = results.sentiment.negative + results.sentiment.neutral + results.sentiment.positive
+  const pct = (n: number) => (rated > 0 ? Math.round((n / rated) * 100) : 0)
+
+  const lines: string[] = []
+  lines.push(`Timeleft Review Analysis — ${regionLabel}`)
+  if (results.dateRange) lines.push(`Data period: ${results.dateRange.earliest} – ${results.dateRange.latest}`)
+  lines.push('')
+  lines.push(`Reviews processed: ${results.totalReviews}`)
+  if (trend) {
+    if (trend.priorTotal > 0) {
+      const delta = results.totalReviews - trend.priorTotal
+      lines.push(`  vs prior equivalent period: ${delta >= 0 ? '+' : ''}${delta} (was ${trend.priorTotal})`)
+    } else {
+      lines.push('  vs prior equivalent period: no comparable data')
+    }
+  }
+  lines.push(`Sentiment: ${pct(results.sentiment.negative)}% negative, ${pct(results.sentiment.neutral)}% neutral, ${pct(results.sentiment.positive)}% positive (from star ratings)`)
+  lines.push('')
+  lines.push(`Themes shown (${filteredThemes.length} of ${results.themes.length} total, ranked by impact):`)
+  lines.push('')
+  filteredThemes.forEach((t, i) => {
+    lines.push(`${i + 1}. ${t.name} [${t.team}]`)
+    lines.push(`   ${t.percentage}% of reviewers mention this (${t.count} of ${results.totalReviews}) · impact ${Math.round(t.impact * 100)}/100`)
+    if (trend && trend.priorTotal > 0) {
+      const priorCount = trend.priorCounts.get(t.name) ?? 0
+      const delta = t.count - priorCount
+      lines.push(`   vs prior period: ${delta >= 0 ? '+' : ''}${delta}`)
+    }
+    if (t.count <= THEME_LOW_CONFIDENCE_MAX) lines.push(`   ⚠ Based on very few reviews (${t.count}) — treat as directional.`)
+    if (t.action) lines.push(`   Action: ${t.action}`)
+    if (t.quotes[0]) lines.push(`   Quote: "${t.quotes[0]}"`)
+    lines.push('')
+  })
+
+  return lines.join('\n')
+}
+
 function buildTeamSlack(team: Team, themes: Theme[], total: number): string {
   const lines = [`*📋 Timeleft review digest — ${team}*`, `_${total} reviews analysed_`, '']
   themes.forEach((t, i) => {
     lines.push(`${i + 1}. *${t.name}* — ${t.percentage}% of reviews (${t.count}/${total})`)
     if (t.action) lines.push(`   →  ${t.action}`)
-    if (t.quotes[0]) lines.push(`   💬 "${t.quotes[0].slice(0, 120)}"`)
+    if (t.quotes[0]) {
+      const q = t.quotes[0]
+      lines.push(`   💬 "${q.length > 120 ? q.slice(0, 120) + '…' : q}"`)
+    }
     lines.push('')
   })
   lines.push('→ Full dashboard: [link]')
