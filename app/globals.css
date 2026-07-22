@@ -4,8 +4,72 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --cream: #F7F3ED;
+  --ink: #111111;
+  --tan: #DED7CA;
+  --muted: #958F8C;
+  --muted-dark: #666362;
+  --accent: #F97709;
+  --info: #0078A8;
+}
+
 body {
-  background-color: #F7F3ED;
-  color: #111111;
+  background-color: var(--cream);
+  background-image:
+    radial-gradient(ellipse 120% 80% at 50% -20%, rgba(249, 119, 9, 0.06), transparent 55%),
+    radial-gradient(ellipse 80% 50% at 100% 0%, rgba(0, 120, 168, 0.04), transparent 45%);
+  background-attachment: fixed;
+  color: var(--ink);
   font-family: 'Plus Jakarta Sans', sans-serif;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: rgba(249, 119, 9, 0.22);
+  color: var(--ink);
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-pill text-sm font-semibold transition h-9 px-5 shrink-0;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-pill text-sm font-semibold transition h-9 px-5 shrink-0 bg-ink text-cream hover:bg-black disabled:bg-muted disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-pill text-sm font-semibold transition h-9 px-5 shrink-0 bg-white text-ink border border-tan hover:border-accent;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-pill text-sm font-semibold transition h-9 px-3 shrink-0 bg-transparent text-muted-dark hover:text-ink;
+  }
+
+  .btn-accent {
+    @apply inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-pill text-sm font-semibold transition h-9 px-5 shrink-0 bg-accent text-white hover:bg-orange-600;
+  }
+
+  .panel {
+    @apply bg-white rounded-3xl border border-tan shadow-[0_1px_2px_rgba(17,17,17,0.03)];
+  }
+
+  .brand-lockup {
+    @apply flex items-baseline gap-2.5;
+  }
+
+  .brand-name {
+    @apply text-2xl font-extrabold tracking-tight text-ink;
+  }
+
+  .brand-product {
+    @apply text-2xl font-medium text-muted-dark;
+  }
+
+  .page-desc {
+    @apply text-sm text-muted-dark leading-relaxed max-w-md;
+  }
 }

@@ -38,19 +38,21 @@ export default function PasswordGate({ children }: { children: React.ReactNode }
   }
 
   if (!ready) {
-    return <div className="min-h-screen bg-cream" aria-hidden />
+    return <div className="min-h-screen" aria-hidden />
   }
 
   if (authed) return <>{children}</>
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-cream px-6">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center px-6">
       <form onSubmit={onSubmit} className="w-full max-w-sm text-center">
-        <div className="flex items-baseline justify-center gap-2 mb-2">
-          <span className="text-2xl font-extrabold tracking-tight text-ink">Timeleft</span>
-          <span className="text-2xl font-medium text-muted-dark">Review Analyser</span>
+        <div className="brand-lockup justify-center">
+          <span className="brand-name">Timeleft</span>
+          <span className="brand-product">Review Analyser</span>
         </div>
-        <p className="text-sm text-muted-dark mb-8">Enter the access password to continue.</p>
+        <p className="page-desc mt-3.5 mx-auto mb-9">
+          Enter the access password to continue.
+        </p>
 
         <label htmlFor="access-password" className="sr-only">Password</label>
         <div className="relative">
@@ -65,7 +67,7 @@ export default function PasswordGate({ children }: { children: React.ReactNode }
               if (error) setError(false)
             }}
             placeholder="Password"
-            className={`w-full rounded-pill border bg-white pl-5 pr-12 py-3 text-sm text-ink placeholder:text-muted focus:outline-none focus:border-accent ${
+            className={`w-full h-10 rounded-pill border bg-white pl-5 pr-12 text-sm text-ink placeholder:text-muted focus:outline-none focus:border-accent ${
               error ? 'border-red-500' : 'border-tan'
             }`}
           />
@@ -83,10 +85,7 @@ export default function PasswordGate({ children }: { children: React.ReactNode }
             Incorrect password
           </p>
         )}
-        <button
-          type="submit"
-          className="w-full mt-4 rounded-pill bg-ink hover:bg-black text-cream font-semibold py-3 px-6 transition"
-        >
+        <button type="submit" className="btn-primary w-full mt-4 h-10">
           Unlock
         </button>
       </form>

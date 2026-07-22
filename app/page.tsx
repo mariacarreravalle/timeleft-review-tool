@@ -532,31 +532,31 @@ export default function Home() {
   const onCountriesChange = (next: string[]) => { setSelectedCountries(next); setExpanded(null) }
 
   return (
-    <main className="min-h-screen bg-cream">
+    <main className="min-h-screen">
       {!view ? (
-        <div className="min-h-screen flex flex-col items-center justify-center px-6 py-10">
-          <div className="text-center mb-8">
-            <div className="flex items-baseline justify-center gap-2">
-              <span className="text-2xl font-extrabold tracking-tight text-ink">Timeleft</span>
-              <span className="text-2xl font-medium text-muted-dark">Review Analyser</span>
+        <div className="min-h-screen flex flex-col items-center justify-center px-6 sm:px-8 py-16">
+          <div className="text-center mb-10">
+            <div className="brand-lockup justify-center">
+              <span className="brand-name">Timeleft</span>
+              <span className="brand-product">Review Analyser</span>
             </div>
-            <p className="text-muted-dark mt-1">
+            <p className="page-desc mt-3.5 mx-auto">
               Drop in your app-store review CSV. We group issues by theme, score how people feel, flag what needs fixing first, and point each one to the right team.
             </p>
           </div>
           {resumeCandidate && (
-            <div className="w-full max-w-2xl mb-4 rounded-2xl border border-tan bg-white p-5 flex items-center justify-between gap-4">
-              <div>
+            <div className="panel w-full max-w-xl mb-5 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="min-w-0">
                 <p className="font-semibold text-ink">Resume your last analysis?</p>
-                <p className="text-sm text-muted-dark">
+                <p className="text-sm text-muted-dark mt-0.5 leading-relaxed">
                   {resumeCandidate.entry.filename} · {resumeCandidate.entry.reviews.length} reviews · analysed {formatRelativeTime(resumeCandidate.entry.analyzedAt)}
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <button onClick={dismissResume} className="text-sm font-semibold text-muted-dark hover:text-ink transition px-3 py-2">
+                <button type="button" onClick={dismissResume} className="btn-ghost">
                   Start fresh
                 </button>
-                <button onClick={resumeSession} className="rounded-pill bg-ink text-cream font-semibold text-sm px-5 py-2.5 hover:bg-black transition">
+                <button type="button" onClick={resumeSession} className="btn-primary">
                   Resume
                 </button>
               </div>
@@ -572,29 +572,31 @@ export default function Home() {
           />
         </div>
       ) : (
-        <div className="max-w-6xl mx-auto px-6 py-10">
-          <div className="flex items-center justify-between mb-8">
-            <div>
-              <div className="flex items-baseline gap-2">
-                <span className="text-2xl font-extrabold tracking-tight text-ink">Timeleft</span>
-                <span className="text-2xl font-medium text-muted-dark">Review Analyser</span>
+        <div className="max-w-6xl mx-auto px-6 sm:px-8 py-12 sm:py-14">
+          <header className="mb-10">
+            <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0">
+                <div className="brand-lockup">
+                  <span className="brand-name">Timeleft</span>
+                  <span className="brand-product">Review Analyser</span>
+                </div>
+                <p className="page-desc mt-3">
+                  Drop in your app-store review CSV. We group issues by theme, score how people feel, flag what needs fixing first, and point each one to the right team.
+                </p>
               </div>
-              <p className="text-muted-dark mt-1">
-                Drop in your app-store review CSV. We group issues by theme, score how people feel, flag what needs fixing first, and point each one to the right team.
-              </p>
+              <div className="flex flex-wrap items-center gap-2.5 shrink-0 sm:pt-1">
+                <ExportReportButton
+                  results={view}
+                  filteredThemes={filteredThemes}
+                  trend={trend}
+                  regionLabel={`${countriesLabel(selectedCountries)} · ${monthsLabel(selectedMonths)}`}
+                />
+                <button type="button" onClick={resetAll} className="btn-primary">
+                  ← New upload
+                </button>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <ExportReportButton
-                results={view}
-                filteredThemes={filteredThemes}
-                trend={trend}
-                regionLabel={`${countriesLabel(selectedCountries)} · ${monthsLabel(selectedMonths)}`}
-              />
-              <button onClick={resetAll} className="rounded-pill bg-ink text-cream font-semibold text-sm px-5 py-2.5 hover:bg-black transition">
-                ← New upload
-              </button>
-            </div>
-          </div>
+          </header>
 
           <RegionFilter
             countries={countries}
@@ -672,24 +674,30 @@ function UploadCard(props: {
 }) {
   const { file, error, parseInfo, loading, onFileChange, onAnalyze } = props
   return (
-    <div className="w-full max-w-2xl space-y-4">
-      <div className="bg-white rounded-3xl border border-tan p-10">
-        <div className={`border-2 border-dashed border-tan rounded-2xl p-10 text-center transition ${loading ? '' : 'hover:border-accent'}`}>
+    <div className="w-full max-w-xl space-y-5">
+      <div className="panel p-8 sm:p-10">
+        <div className={`border border-dashed border-tan rounded-2xl px-6 py-12 text-center transition ${loading ? 'opacity-70' : 'hover:border-accent hover:bg-cream/40'}`}>
           <input type="file" accept=".csv" onChange={onFileChange} className="hidden" id="csv-input" disabled={loading} />
           <label htmlFor="csv-input" className={`block ${loading ? 'cursor-default' : 'cursor-pointer'}`}>
-            <div className="text-5xl mb-4">📊</div>
-            <p className="text-lg font-semibold text-ink">{file ? file.name : 'Drag & drop CSV, or click to select'}</p>
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-cream border border-tan text-accent">
+              <UploadIcon />
+            </div>
+            <p className="text-base font-semibold text-ink">
+              {file ? file.name : 'Drop a CSV here, or click to browse'}
+            </p>
+            <p className="text-sm text-muted-dark mt-1.5">App Store or Google Play review export</p>
           </label>
         </div>
 
-        {error && <p className="text-red-600 mt-4 text-center font-medium">{error}</p>}
-        {parseInfo && !error && !loading && <p className="text-xs text-muted-dark mt-4 text-center">✓ {parseInfo}</p>}
+        {error && <p className="text-red-600 mt-5 text-center text-sm font-medium">{error}</p>}
+        {parseInfo && !error && !loading && <p className="text-xs text-muted-dark mt-5 text-center">✓ {parseInfo}</p>}
 
         {!loading && (
           <button
+            type="button"
             onClick={onAnalyze}
             disabled={!file}
-            className="w-full mt-6 rounded-pill bg-ink hover:bg-black disabled:bg-muted disabled:cursor-not-allowed text-cream font-semibold py-3.5 px-6 transition"
+            className="btn-primary w-full mt-7"
           >
             Analyse reviews
           </button>
@@ -714,26 +722,26 @@ function AnalysisLoading() {
   const progress = ((step + 1) / ANALYSIS_STEPS.length) * 100
 
   return (
-    <div className="bg-white rounded-3xl border border-tan p-8">
-      <div className="flex items-baseline gap-2 mb-1">
+    <div className="panel p-7 sm:p-8">
+      <div className="brand-lockup mb-1">
         <span className="text-lg font-extrabold tracking-tight text-ink">Timeleft</span>
         <span className="text-lg font-medium text-muted-dark">Review Analyser</span>
       </div>
-      <p className="text-sm text-muted-dark mb-5">Analysing your reviews…</p>
+      <p className="text-sm text-muted-dark mb-6">Analysing your reviews…</p>
 
-      <div className="h-1.5 rounded-full bg-tan overflow-hidden mb-6">
+      <div className="h-1.5 rounded-full bg-tan overflow-hidden mb-7">
         <div
           className="h-full bg-accent transition-all duration-700 ease-out"
           style={{ width: `${progress}%` }}
         />
       </div>
 
-      <ol className="space-y-4">
+      <ol className="space-y-5">
         {ANALYSIS_STEPS.map((item, i) => {
           const done = i < step
           const active = i === step
           return (
-            <li key={item.title} className="flex gap-3 items-start">
+            <li key={item.title} className="flex gap-3.5 items-start">
               <span
                 className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
                   done
@@ -752,7 +760,7 @@ function AnalysisLoading() {
                     <span className="inline-block ml-2 h-3 w-3 rounded-full border-2 border-accent border-t-transparent animate-spin align-[-2px]" />
                   )}
                 </p>
-                <p className={`text-sm mt-0.5 ${active ? 'text-muted-dark' : 'text-muted'}`}>
+                <p className={`text-sm mt-1 leading-relaxed ${active ? 'text-muted-dark' : 'text-muted'}`}>
                   {item.detail}
                 </p>
               </div>
@@ -761,6 +769,16 @@ function AnalysisLoading() {
         })}
       </ol>
     </div>
+  )
+}
+
+function UploadIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="17 8 12 3 7 8" />
+      <line x1="12" y1="3" x2="12" y2="15" />
+    </svg>
   )
 }
 
@@ -778,10 +796,10 @@ function RegionFilter(props: {
   const { countries, selectedCountries, onCountriesChange, selectedMonths, onMonthsChange, totalAll, totalRegion } = props
 
   return (
-    <div className="bg-white rounded-3xl border border-tan p-5 mb-6">
-      <div className="flex flex-col md:flex-row md:items-end gap-4">
+    <div className="panel p-5 sm:p-6 mb-8">
+      <div className="flex flex-col lg:flex-row lg:items-end gap-5">
         <div className="flex-1 min-w-0">
-          <label className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-1.5">Country</label>
+          <label className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-2">Country</label>
           <CountryMultiSelect
             countries={countries}
             selected={selectedCountries}
@@ -790,17 +808,17 @@ function RegionFilter(props: {
           />
         </div>
 
-        <div className="w-full md:w-56 shrink-0">
-          <label className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-1.5">Timeframe</label>
+        <div className="w-full lg:w-52 shrink-0">
+          <label className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-2">Timeframe</label>
           <TimeframeMultiSelect selected={selectedMonths} onChange={onMonthsChange} />
         </div>
 
-        <div className="md:pb-2 md:text-right shrink-0">
+        <div className="lg:pb-2 lg:pl-2 lg:text-right shrink-0 lg:min-w-[8.5rem]">
           <p className="text-xs text-muted-dark">Showing</p>
-          <p className="text-lg font-extrabold text-ink leading-tight">
+          <p className="text-lg font-extrabold text-ink leading-tight mt-0.5">
             {totalRegion.toLocaleString()}<span className="text-sm font-medium text-muted-dark"> / {totalAll.toLocaleString()}</span>
           </p>
-          <p className="text-[11px] text-muted-dark">
+          <p className="text-[11px] text-muted-dark mt-0.5 leading-snug">
             {countriesLabel(selectedCountries)} · {monthsLabel(selectedMonths)}
           </p>
         </div>
@@ -845,7 +863,7 @@ function TimeframeMultiSelect({
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
-        className="w-full rounded-pill border border-tan bg-cream px-5 py-2.5 text-sm font-semibold text-ink focus:outline-none focus:border-accent cursor-pointer text-left flex items-center justify-between gap-2"
+        className="w-full h-9 rounded-pill border border-tan bg-cream px-4 text-sm font-semibold text-ink focus:outline-none focus:border-accent cursor-pointer text-left flex items-center justify-between gap-2"
       >
         <span className="truncate">{monthsLabel(selected)}</span>
         <span className="text-muted-dark shrink-0">{open ? '▲' : '▼'}</span>
@@ -939,7 +957,7 @@ function CountryMultiSelect({
   return (
     <div ref={rootRef} className="relative">
       <div
-        className="relative w-full min-h-[42px] rounded-2xl border border-tan bg-cream px-3 py-2 flex flex-wrap items-center gap-1.5 focus-within:border-accent cursor-text"
+        className="relative w-full min-h-9 rounded-pill border border-tan bg-cream px-3 py-1.5 flex flex-wrap items-center gap-1.5 focus-within:border-accent cursor-text"
         onClick={() => { setOpen(true); inputRef.current?.focus() }}
       >
         {selected.length === 0 && !query && (
@@ -1072,26 +1090,26 @@ function Dashboard(props: {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {total > 0 && total < REGION_SMALL_SAMPLE_MAX && (
-        <div className="rounded-2xl border border-amber-300 bg-amber-50 px-5 py-3 text-sm text-amber-900">
+        <div className="rounded-2xl border border-amber-300/80 bg-amber-50/90 px-5 py-3.5 text-sm text-amber-900 leading-relaxed">
           <span className="font-semibold">⚠ Small sample ({total} reviews in this view).</span> Percentages and rankings can swing a lot with each new review — treat as directional, not definitive.
         </div>
       )}
 
       {/* A. Flash metric row */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
         <MetricCard label="Reviews processed">
           <div className="flex items-baseline gap-2">
-            <span className="text-4xl font-extrabold text-ink">{total.toLocaleString()}</span>
+            <span className="text-4xl font-extrabold tracking-tight text-ink">{total.toLocaleString()}</span>
             <span className="text-sm text-muted-dark">reviews</span>
           </div>
-          <p className="text-xs text-muted-dark mt-2">{results.themes.length} themes identified</p>
+          <p className="text-xs text-muted-dark mt-3 leading-relaxed">{results.themes.length} themes identified</p>
           {results.dateRange && (
-            <p className="text-[11px] text-muted mt-1">{results.dateRange.earliest} – {results.dateRange.latest}</p>
+            <p className="text-[11px] text-muted mt-1.5">{results.dateRange.earliest} – {results.dateRange.latest}</p>
           )}
           {trend && (
-            <p className="text-[11px] font-semibold mt-1">
+            <p className="text-[11px] font-semibold mt-1.5 leading-relaxed">
               {volumeDelta === null ? (
                 <span className="text-muted-dark">No prior-period data to compare</span>
               ) : (
@@ -1108,18 +1126,18 @@ function Dashboard(props: {
         <MetricCard label="Most urgent issue">
           {topUrgent ? (
             <div>
-              <p className="font-semibold text-ink leading-tight">{topUrgent.name}</p>
-              <p className="text-sm text-muted-dark mt-1">
+              <p className="font-semibold text-ink leading-snug">{topUrgent.name}</p>
+              <p className="text-sm text-muted-dark mt-1.5 leading-relaxed">
                 <span className="text-accent font-bold">{topUrgent.percentage}%</span> of reviews · {topUrgent.count}/{total}
               </p>
-              <div className="mt-2 h-1.5 rounded-full bg-tan overflow-hidden">
+              <div className="mt-3 h-1.5 rounded-full bg-tan overflow-hidden">
                 <div className="h-full bg-accent" style={{ width: `${Math.round(topUrgent.impact * 100)}%` }} />
               </div>
-              <p className="text-[11px] text-muted-dark mt-1" title={IMPACT_FORMULA_TOOLTIP}>
+              <p className="text-[11px] text-muted-dark mt-1.5" title={IMPACT_FORMULA_TOOLTIP}>
                 urgency {Math.round(topUrgent.impact * 100)}/100 ⓘ · owner: {topUrgent.team}
               </p>
               {topUrgent.count <= THEME_LOW_CONFIDENCE_MAX && (
-                <p className="text-[11px] text-amber-700 font-semibold mt-1">⚠ Based on very few reviews ({topUrgent.count}) — treat as directional, not definitive.</p>
+                <p className="text-[11px] text-amber-700 font-semibold mt-1.5 leading-relaxed">⚠ Based on very few reviews ({topUrgent.count}) — treat as directional, not definitive.</p>
               )}
             </div>
           ) : <p className="text-muted-dark">—</p>}
@@ -1127,18 +1145,18 @@ function Dashboard(props: {
       </div>
 
       {/* B. Controls + theme dashboard */}
-      <div className="bg-white rounded-3xl border border-tan p-7">
+      <div className="panel p-6 sm:p-8">
         <ThemesSectionHeader />
 
         {/* search + filters */}
-        <div className="flex flex-col gap-3 mt-4 mb-5">
+        <div className="flex flex-col gap-4 mt-5 mb-6">
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search themes, quotes, actions…"
-            className="w-full rounded-pill border border-tan bg-cream px-5 py-2.5 text-sm text-ink placeholder:text-muted focus:outline-none focus:border-accent"
+            className="w-full h-9 rounded-pill border border-tan bg-cream px-5 text-sm text-ink placeholder:text-muted focus:outline-none focus:border-accent"
           />
-          <div className="flex flex-wrap gap-4">
+          <div className="flex flex-wrap gap-x-6 gap-y-3">
             <FilterGroup
               label="Sentiment"
               value={sentimentFilter}
@@ -1155,11 +1173,11 @@ function Dashboard(props: {
         </div>
 
         {openThemes.length === 0 && doneThemes.length === 0 ? (
-          <p className="text-sm text-muted-dark py-6 text-center">No themes match these filters.</p>
+          <p className="text-sm text-muted-dark py-8 text-center">No themes match these filters.</p>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-3.5">
             {openThemes.length === 0 ? (
-              <p className="text-sm text-muted-dark py-4 text-center border border-dashed border-tan rounded-2xl">
+              <p className="text-sm text-muted-dark py-5 text-center border border-dashed border-tan rounded-2xl">
                 All matching themes are marked as solved.
               </p>
             ) : (
@@ -1167,17 +1185,17 @@ function Dashboard(props: {
             )}
 
             {doneThemes.length > 0 && (
-              <div className="pt-3">
+              <div className="pt-4">
                 <button
                   type="button"
                   onClick={() => setResolvedOpen(!resolvedOpen)}
-                  className="w-full flex items-center justify-between rounded-2xl border border-tan bg-cream/60 px-4 py-3 text-sm font-semibold text-muted-dark hover:text-ink transition"
+                  className="w-full flex items-center justify-between rounded-2xl border border-tan bg-cream/70 px-4 h-10 text-sm font-semibold text-muted-dark hover:text-ink transition"
                 >
                   <span>Resolved ({doneThemes.length})</span>
-                  <span>{resolvedOpen ? 'Hide ▲' : 'Show ▼'}</span>
+                  <span className="text-xs">{resolvedOpen ? 'Hide ▲' : 'Show ▼'}</span>
                 </button>
                 {resolvedOpen && (
-                  <div className="space-y-3 mt-3">
+                  <div className="space-y-3.5 mt-3.5">
                     {doneThemes.map(theme => renderTheme(theme, true))}
                   </div>
                 )}
@@ -1188,9 +1206,9 @@ function Dashboard(props: {
       </div>
 
       {/* Charts */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-white rounded-3xl border border-tan p-7">
-          <h3 className="font-bold text-ink mb-4">Rating distribution</h3>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        <div className="panel p-6 sm:p-7">
+          <h3 className="font-bold text-ink mb-5">Rating distribution</h3>
           <ResponsiveContainer width="100%" height={240}>
             <BarChart data={results.overallRatings}>
               <CartesianGrid strokeDasharray="3 3" stroke="#DED7CA" />
@@ -1201,8 +1219,8 @@ function Dashboard(props: {
             </BarChart>
           </ResponsiveContainer>
         </div>
-        <div className="bg-white rounded-3xl border border-tan p-7">
-          <h3 className="font-bold text-ink mb-4">Review volume over time</h3>
+        <div className="panel p-6 sm:p-7">
+          <h3 className="font-bold text-ink mb-5">Review volume over time</h3>
           <ResponsiveContainer width="100%" height={240}>
             <LineChart data={results.volumeOverTime}>
               <CartesianGrid strokeDasharray="3 3" stroke="#DED7CA" />
@@ -1233,8 +1251,8 @@ function ThemesSectionHeader() {
   const [open, setOpen] = useState(false)
 
   return (
-    <div className="flex items-center gap-2 mb-2">
-      <h2 className="text-xl font-bold text-ink">Themes, ranked by impact</h2>
+    <div className="flex items-center gap-2 mb-1">
+      <h2 className="text-xl font-bold tracking-tight text-ink">Themes, ranked by impact</h2>
       <InfoLightbulb onClick={() => setOpen(true)} />
       {open && (
         <HowCalculatedDialog onClose={() => setOpen(false)} titleId="themes-how-calculated">
@@ -1287,8 +1305,8 @@ function SentimentMetricCard({ breakdown, rated }: { breakdown: AnalysisResult['
   const [open, setOpen] = useState(false)
 
   return (
-    <div className="bg-white rounded-3xl border border-tan p-6">
-      <div className="flex items-center gap-1.5 mb-3">
+    <div className="panel p-6">
+      <div className="flex items-center gap-1.5 mb-4">
         <p className="text-xs font-semibold uppercase tracking-wide text-muted-dark">Sentiment (from star ratings)</p>
         <InfoLightbulb onClick={() => setOpen(true)} className="h-6 w-6" />
       </div>
@@ -1389,7 +1407,7 @@ function HowCalculatedDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="bg-white rounded-3xl border border-tan shadow-xl max-w-lg w-full max-h-[85vh] overflow-y-auto p-7"
+        className="panel shadow-xl max-w-lg w-full max-h-[85vh] overflow-y-auto p-7 sm:p-8"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-4 mb-4">
@@ -1411,7 +1429,7 @@ function HowCalculatedDialog({
         <button
           type="button"
           onClick={onClose}
-          className="mt-6 w-full rounded-pill bg-ink hover:bg-black text-cream font-semibold py-2.5 text-sm transition"
+          className="btn-primary w-full mt-7"
         >
           Got it
         </button>
@@ -1432,8 +1450,8 @@ function LightbulbIcon() {
 
 function MetricCard({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="bg-white rounded-3xl border border-tan p-6">
-      <p className="text-xs font-semibold uppercase tracking-wide text-muted-dark mb-3">{label}</p>
+    <div className="panel p-6">
+      <p className="text-xs font-semibold uppercase tracking-wide text-muted-dark mb-3.5">{label}</p>
       {children}
     </div>
   )
@@ -1453,10 +1471,10 @@ function SentimentBar({ breakdown, rated }: { breakdown: AnalysisResult['sentime
           <div key={k} style={{ width: `${pct(n)}%`, backgroundColor: SENTIMENT_COLORS[k] }} title={`${k}: ${n}`} />
         ))}
       </div>
-      <div className="flex justify-between mt-2 text-xs">
-        <span style={{ color: SENTIMENT_COLORS.negative }} className="font-semibold">😞 {pct(breakdown.negative)}%</span>
-        <span className="text-muted-dark font-semibold">😐 {pct(breakdown.neutral)}%</span>
-        <span style={{ color: SENTIMENT_COLORS.positive }} className="font-semibold">😊 {pct(breakdown.positive)}%</span>
+      <div className="flex justify-between mt-2.5 text-xs gap-2">
+        <span style={{ color: SENTIMENT_COLORS.negative }} className="font-semibold whitespace-nowrap">😞 {pct(breakdown.negative)}%</span>
+        <span className="text-muted-dark font-semibold whitespace-nowrap">😐 {pct(breakdown.neutral)}%</span>
+        <span style={{ color: SENTIMENT_COLORS.positive }} className="font-semibold whitespace-nowrap">😊 {pct(breakdown.positive)}%</span>
       </div>
     </div>
   )
@@ -1469,14 +1487,15 @@ function FilterGroup({ label, value, onChange, options }: {
   options: Array<[string, string]>
 }) {
   return (
-    <div className="flex items-center gap-2">
-      {label && <span className="text-xs font-semibold uppercase tracking-wide text-muted-dark">{label}</span>}
+    <div className="flex items-center gap-2.5 flex-wrap">
+      {label && <span className="text-xs font-semibold uppercase tracking-wide text-muted-dark shrink-0">{label}</span>}
       <div className="flex flex-wrap gap-1.5">
         {options.map(([val, lab]) => (
           <button
             key={val}
+            type="button"
             onClick={() => onChange(val)}
-            className={`rounded-pill px-3 py-1 text-xs font-semibold transition border ${
+            className={`rounded-pill h-7 px-3 text-xs font-semibold transition border whitespace-nowrap ${
               value === val ? 'bg-ink text-cream border-ink' : 'bg-white text-muted-dark border-tan hover:border-accent'
             }`}
           >
@@ -1509,55 +1528,55 @@ function ThemeRow({ theme, rank, total, isOpen, onToggle, trendDelta, resolved, 
   onToggleResolved: () => void
 }) {
   return (
-    <div className={`rounded-2xl border overflow-hidden transition ${resolved ? 'border-tan/70 bg-cream/40 opacity-80' : 'border-tan bg-white'}`}>
-      <div className="flex items-stretch">
+    <div className={`rounded-2xl border overflow-hidden transition ${resolved ? 'border-tan/70 bg-cream/50 opacity-80' : 'border-tan bg-white'}`}>
+      <div className="flex items-stretch gap-1">
         <button
           type="button"
           onClick={onToggle}
-          className={`min-w-0 flex-1 text-left p-5 transition flex gap-4 items-start ${resolved ? '' : 'hover:bg-cream'}`}
+          className={`min-w-0 flex-1 text-left px-5 py-4 transition flex gap-4 items-start ${resolved ? '' : 'hover:bg-cream/60'}`}
         >
-          <span className="text-lg font-extrabold text-muted w-6 shrink-0">{rank}</span>
+          <span className="text-lg font-extrabold text-muted w-6 shrink-0 pt-0.5">{rank}</span>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
               <span className={`font-semibold ${resolved ? 'text-muted-dark line-through' : 'text-ink'}`}>{theme.name}</span>
               <TeamBadge team={theme.team} />
               <span className="text-sm">{sentimentEmoji(theme.sentiment)}</span>
               {!resolved && theme.count <= THEME_LOW_CONFIDENCE_MAX && (
-                <span className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-pill px-2 py-0.5 font-semibold">
+                <span className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-pill px-2 h-6 inline-flex items-center font-semibold whitespace-nowrap">
                   ⚠ low sample (n={theme.count})
                 </span>
               )}
             </div>
             {resolved && resolvedMark && (
-              <p className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-semibold text-info bg-white border border-tan rounded-pill px-2.5 py-0.5">
+              <p className="mt-2 inline-flex items-center gap-1.5 text-[11px] font-semibold text-info bg-white border border-tan rounded-pill px-2.5 h-6 whitespace-nowrap">
                 <span aria-hidden>✓</span>
                 <span>by {resolvedMark.byName} in {resolvedMark.byTeam}, {formatFixedDate(resolvedMark.fixedAt)}</span>
               </p>
             )}
-            <p className="text-sm text-muted-dark mt-1">
+            <p className="text-sm text-muted-dark mt-1.5 leading-relaxed">
               <span className={`font-semibold ${resolved ? 'text-muted-dark' : 'text-ink'}`}>{theme.percentage}% of reviewers mention this</span> ({theme.count} of {total}) — {theme.action || 'flagged this theme'}
             </p>
-            <div className="mt-2 h-1.5 rounded-full bg-tan overflow-hidden max-w-xs">
+            <div className="mt-2.5 h-1.5 rounded-full bg-tan overflow-hidden max-w-xs">
               <div className={`h-full ${resolved ? 'bg-muted' : 'bg-accent'}`} style={{ width: `${Math.round(theme.impact * 100)}%` }} />
             </div>
           </div>
-          <div className="text-right shrink-0" title={IMPACT_FORMULA_TOOLTIP}>
-            <p className={`text-2xl font-extrabold ${resolved ? 'text-muted' : 'text-accent'}`}>{Math.round(theme.impact * 100)}</p>
+          <div className="text-right shrink-0 pt-0.5" title={IMPACT_FORMULA_TOOLTIP}>
+            <p className={`text-2xl font-extrabold tracking-tight ${resolved ? 'text-muted' : 'text-accent'}`}>{Math.round(theme.impact * 100)}</p>
             <p className="text-[11px] text-muted-dark">impact ⓘ</p>
             {trendDelta !== null && (
-              <p className={`text-[11px] font-semibold mt-0.5 ${trendDelta > 0 ? 'text-accent' : trendDelta < 0 ? 'text-info' : 'text-muted-dark'}`}>
+              <p className={`text-[11px] font-semibold mt-1 ${trendDelta > 0 ? 'text-accent' : trendDelta < 0 ? 'text-info' : 'text-muted-dark'}`}>
                 {trendDelta > 0 ? '▲' : trendDelta < 0 ? '▼' : '–'} {trendDelta === 0 ? 'no change' : `${trendDelta > 0 ? '+' : ''}${trendDelta} vs prior`}
               </p>
             )}
-            <p className="text-[11px] text-accent mt-1">{isOpen ? 'Hide quotes ▲' : 'Show quotes ▼'}</p>
+            <p className="text-[11px] text-accent mt-1.5 whitespace-nowrap">{isOpen ? 'Hide quotes ▲' : 'Show quotes ▼'}</p>
           </div>
         </button>
 
-        <div className="shrink-0 flex items-start p-4 pl-0">
+        <div className="shrink-0 flex items-start pr-4 pt-4">
           <button
             type="button"
             onClick={e => { e.stopPropagation(); onToggleResolved() }}
-            className={`rounded-pill px-3 py-1.5 text-xs font-semibold border transition whitespace-nowrap ${
+            className={`rounded-pill h-8 px-3.5 text-xs font-semibold border transition whitespace-nowrap ${
               resolved
                 ? 'bg-white text-muted-dark border-tan hover:border-ink hover:text-ink'
                 : 'bg-cream text-ink border-tan hover:border-accent'
@@ -1570,11 +1589,11 @@ function ThemeRow({ theme, rank, total, isOpen, onToggle, trendDelta, resolved, 
       </div>
 
       {isOpen && (
-        <div className="px-5 pb-5 pt-1 bg-cream border-t border-tan">
-          <p className="text-xs font-semibold uppercase tracking-wide text-muted-dark mb-2">Top quotes backing this theme</p>
-          <div className="space-y-2">
+        <div className="px-5 pb-5 pt-2 bg-cream/80 border-t border-tan">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-dark mb-3">Top quotes backing this theme</p>
+          <div className="space-y-2.5">
             {theme.quotes.length > 0 ? theme.quotes.slice(0, 3).map((q, i) => (
-              <blockquote key={i} className="text-sm text-ink italic border-l-2 border-accent pl-3">
+              <blockquote key={i} className="text-sm text-ink italic border-l-2 border-accent pl-3.5 leading-relaxed">
                 “{q}”
               </blockquote>
             )) : <p className="text-sm text-muted-dark">No quotes returned for this theme.</p>}
@@ -1637,46 +1656,46 @@ function ResolvePromptModal({
         aria-labelledby="resolve-prompt-title"
         onSubmit={submit}
         onClick={e => e.stopPropagation()}
-        className="bg-white rounded-3xl border border-tan shadow-xl max-w-md w-full p-7"
+        className="bg-white rounded-3xl border border-tan shadow-xl max-w-md w-full p-7 sm:p-8"
       >
-        <h3 id="resolve-prompt-title" className="text-lg font-bold text-ink mb-1">Mark as solved</h3>
-        <p className="text-sm text-muted-dark mb-5">
+        <h3 id="resolve-prompt-title" className="text-lg font-bold tracking-tight text-ink mb-1.5">Mark as solved</h3>
+        <p className="text-sm text-muted-dark mb-6 leading-relaxed">
           Stamp <span className="font-semibold text-ink">“{themeName}”</span> with who fixed it, so the next person knows it&apos;s handled.
         </p>
 
-        <label htmlFor="resolver-name" className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-1.5">Your name</label>
+        <label htmlFor="resolver-name" className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-2">Your name</label>
         <input
           id="resolver-name"
           autoFocus
           value={name}
           onChange={e => { setName(e.target.value); if (error) setError('') }}
           placeholder="e.g. Alex"
-          className="w-full rounded-pill border border-tan bg-cream px-5 py-2.5 text-sm text-ink placeholder:text-muted focus:outline-none focus:border-accent mb-4"
+          className="w-full h-9 rounded-pill border border-tan bg-cream px-5 text-sm text-ink placeholder:text-muted focus:outline-none focus:border-accent mb-4"
         />
 
-        <label htmlFor="resolver-team" className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-1.5">Your team</label>
+        <label htmlFor="resolver-team" className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-2">Your team</label>
         <select
           id="resolver-team"
           value={team}
           onChange={e => setTeam(e.target.value)}
-          className="w-full rounded-pill border border-tan bg-cream px-5 py-2.5 text-sm font-semibold text-ink focus:outline-none focus:border-accent cursor-pointer mb-2"
+          className="w-full h-9 rounded-pill border border-tan bg-cream px-5 text-sm font-semibold text-ink focus:outline-none focus:border-accent cursor-pointer mb-2"
         >
           {TEAMS.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
 
         {error && <p className="text-sm font-medium text-red-600 mt-2" role="alert">{error}</p>}
 
-        <div className="flex gap-2 mt-5">
+        <div className="flex gap-2.5 mt-6">
           <button
             type="button"
             onClick={onCancel}
-            className="flex-1 rounded-pill border border-tan bg-white text-ink font-semibold py-2.5 text-sm hover:border-accent transition"
+            className="btn-secondary flex-1"
           >
             Cancel
           </button>
           <button
             type="submit"
-            className="flex-1 rounded-pill bg-ink hover:bg-black text-cream font-semibold py-2.5 text-sm transition"
+            className="btn-primary flex-1"
           >
             Confirm solved
           </button>
@@ -1718,13 +1737,13 @@ function TeamActions({ themes, total, trend, activeSlackTeam, setActiveSlackTeam
   }
 
   return (
-    <div className="bg-white rounded-3xl border border-tan p-7">
-      <h2 className="text-xl font-bold text-ink mb-1">Select the team responsible</h2>
-      <p className="text-sm text-muted-dark mb-5">
+    <div className="panel p-6 sm:p-8">
+      <h2 className="text-xl font-bold tracking-tight text-ink mb-1.5">Select the team responsible</h2>
+      <p className="text-sm text-muted-dark mb-6 max-w-md leading-relaxed">
         Pick your team to see only the actions that belong to you.
       </p>
 
-      <div className="flex flex-wrap gap-2 mb-6">
+      <div className="flex flex-wrap gap-2 mb-7">
         {byTeam.map(({ team, items }) => {
           const isActive = activeSlackTeam === team
           return (
@@ -1732,7 +1751,7 @@ function TeamActions({ themes, total, trend, activeSlackTeam, setActiveSlackTeam
               key={team}
               type="button"
               onClick={() => selectTeam(team)}
-              className={`rounded-pill px-4 py-2 text-sm font-semibold transition border inline-flex items-center gap-2 ${
+              className={`rounded-pill h-9 px-4 text-sm font-semibold transition border inline-flex items-center gap-2 whitespace-nowrap ${
                 isActive
                   ? 'bg-ink text-cream border-ink'
                   : 'bg-white text-ink border-tan hover:border-accent'
@@ -1747,21 +1766,21 @@ function TeamActions({ themes, total, trend, activeSlackTeam, setActiveSlackTeam
       </div>
 
       {!selected ? (
-        <p className="text-sm text-muted-dark py-4 text-center border border-dashed border-tan rounded-2xl">
+        <p className="text-sm text-muted-dark py-6 text-center border border-dashed border-tan rounded-2xl">
           Choose a team above to see its action items.
         </p>
       ) : (
-        <div className="rounded-2xl border border-tan p-5">
-          <div className="flex items-center justify-between mb-4">
+        <div className="rounded-2xl border border-tan bg-cream/30 p-5 sm:p-6">
+          <div className="flex items-center justify-between mb-5">
             <TeamBadge team={selected.team} />
             <span className="text-xs text-muted-dark">
               {selected.items.length} {selected.items.length === 1 ? 'theme' : 'themes'}
             </span>
           </div>
 
-          <ul className="space-y-3 mb-5">
+          <ul className="space-y-3.5 mb-6">
             {selected.items.map(t => (
-              <li key={t.name} className="text-sm">
+              <li key={t.name} className="text-sm leading-relaxed">
                 <span className="font-semibold text-ink">{t.name}</span>
                 <span className="text-muted-dark"> — {t.percentage}% · </span>
                 <span className="text-ink">{t.action || 'review flagged theme'}</span>
@@ -1770,24 +1789,26 @@ function TeamActions({ themes, total, trend, activeSlackTeam, setActiveSlackTeam
           </ul>
 
           <button
+            type="button"
             onClick={() => { setShowSlack(s => !s); setCopied(false) }}
-            className="rounded-pill bg-accent hover:bg-orange-600 text-white font-semibold py-2 px-4 text-sm transition"
+            className="btn-accent"
           >
             {showSlack ? 'Hide Slack draft' : `Draft Slack for ${selected.team}`}
           </button>
 
           {showSlack && (
-            <div className="mt-3">
-              <div className="bg-ink rounded-2xl p-4 font-mono text-xs text-cream whitespace-pre-wrap max-h-56 overflow-y-auto">
+            <div className="mt-4">
+              <div className="bg-ink rounded-2xl p-4 font-mono text-xs text-cream whitespace-pre-wrap max-h-56 overflow-y-auto leading-relaxed">
                 {buildTeamSlack(selected.team, selected.items, total, trend)}
               </div>
               <button
+                type="button"
                 onClick={() => {
                   navigator.clipboard.writeText(buildTeamSlack(selected.team, selected.items, total, trend))
                   setCopied(true)
                   setTimeout(() => setCopied(false), 2000)
                 }}
-                className="mt-2 rounded-pill bg-ink text-cream font-semibold py-1.5 px-4 text-xs hover:bg-black transition"
+                className="btn-primary mt-3 h-8 px-4 text-xs"
               >
                 {copied ? 'Copied ✓' : 'Copy to clipboard'}
               </button>
@@ -1838,8 +1859,9 @@ function ExportReportButton({ results, filteredThemes, trend, regionLabel }: {
   return (
     <div className="relative">
       <button
+        type="button"
         onClick={() => setOpen(o => !o)}
-        className="rounded-pill bg-white border border-tan text-ink font-semibold text-sm px-5 py-2.5 hover:border-accent transition"
+        className="btn-secondary"
       >
         {status || (open ? 'Export ▲' : 'Export ▼')}
       </button>
