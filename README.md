@@ -94,7 +94,7 @@ This release intentionally prioritises a **solid core data flow**: upload → an
 Left for a next phase (not cut because they lack value — deferred so the first draft stayed focused):
 
 - **Historical data trends** — Proper multi-period comparison and regression spotting beyond the current prior-month delta  
-- **Shared resolved state** — Database sync so “mark as solved” stamps are visible across teammates’ machines (today they are browser-local only)  
+- **Shared “mark as solved” across the team** — Today resolved stamps live only in each browser’s localStorage, so if Maria marks a theme fixed, Alex still sees it as open on his laptop. That breaks the whole point of the stamp: a shared signal of “already handled / who’s on it.” Without a shared store (DB or similar), teammates duplicate work, re-investigate fixed issues, and can’t trust the board as a team source of truth. Syncing resolved state across users — keyed by export — is the highest-leverage collaboration fix once more than one person uses the tool day to day.  
 - **Automated Slack alerts via Make** — e.g. notify a channel when someone resolves an issue, or when urgency spikes  
 - **Richer drill-down** — Full review lists per theme and CSV export of matches  
 - **Hardening for wider rollout** — API rate limiting and audit logging beyond the current auth gate and payload limits  

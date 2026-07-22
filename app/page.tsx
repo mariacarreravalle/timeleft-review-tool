@@ -359,6 +359,7 @@ function sentimentEmoji(s: number) {
 
 export default function Home() {
   const [loading, setLoading] = useState(false)
+  const [analysisProgress, setAnalysisProgress] = useState<AnalysisProgress | null>(null)
   const [error, setError] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [parseInfo, setParseInfo] = useState('')
@@ -451,6 +452,7 @@ export default function Home() {
       return
     }
     setLoading(true)
+    setAnalysisProgress(null)
     setError('')
 
     try {
@@ -486,29 +488,24 @@ export default function Home() {
         return
       }
 
+      if (parsedReviews.length > 5000) {
+        setError('Too many reviews (max 5,000). Split the export and try again.')
+        setLoading(false)
+        return
+      }
+
       setParseInfo(
         `Parsed ${parsedReviews.length} of ${totalRows} rows · text: "${detectedColumns.translatedText || detectedColumns.reviewText}"` +
         (detectedColumns.rating ? ` · rating: "${detectedColumns.rating}"` : '') +
         (detectedColumns.country ? ` · country: "${detectedColumns.country}"` : '')
       )
 
-      const response = await fetch('/api/analyze', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reviews: parsedReviews })
-      })
+      // Large exports are analysed in batches of 100, then merged into the same
+      // { themes } taxonomy the dashboard and Make webhook already expect.
+      const themes = await analyzeReviewsBatched(parsedReviews, setAnalysisProgress)
 
-      if (!response.ok) {
-        const body = await response.json().catch(() => null)
-        if (response.status === 401) {
-          throw new Error('Session expired. Refresh the page and unlock again.')
-        }
-        throw new Error(body?.error || `Analysis failed (HTTP ${response.status})`)
-      }
-      const data = await response.json() as { themes: ThemeTaxonomy[] }
       setReviews(parsedReviews)
-      setTaxonomy(data.themes)
+      setTaxonomy(themes)
       setSelectedCountries([])
       setSelectedMonths([])
       setSentimentFilter([])
@@ -520,7 +517,7 @@ export default function Home() {
         filename: file.name,
         analyzedAt: new Date().toISOString(),
         reviews: parsedReviews,
-        taxonomy: data.themes,
+        taxonomy: themes,
         hasCityData: !!detectedColumns.city
       })
       setActiveHash(csvHash)
@@ -531,6 +528,7 @@ export default function Home() {
       setError(err instanceof Error ? err.message : 'Analysis failed')
     } finally {
       setLoading(false)
+      setAnalysisProgress(null)
     }
   }
 
@@ -662,6 +660,7 @@ export default function Home() {
             error={error}
             parseInfo={parseInfo}
             loading={loading}
+            analysisProgress={analysisProgress}
             onFileChange={handleFileChange}
             onAnalyze={handleAnalyze}
           />
@@ -680,6 +679,12 @@ export default function Home() {
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2.5 shrink-0 sm:pt-1">
+                <SendMonthlyDigestButton
+                  results={view}
+                  filteredThemes={filteredThemes}
+                  trend={trend}
+                  regionLabel={`${countriesLabel(selectedCountries)} · ${monthsLabel(selectedMonths)}`}
+                />
                 <ExportReportButton
                   results={view}
                   filteredThemes={filteredThemes}
@@ -740,6 +745,73 @@ export default function Home() {
   )
 }
 
+const ANALYSIS_BATCH_SIZE = 100
+
+type AnalysisProgress = {
+  phase: 'batch' | 'merge'
+  completedBatches: number
+  totalBatches: number
+}
+
+async function analyzeReviewsBatched(
+  reviews: Review[],
+  onProgress?: (info: AnalysisProgress) => void
+): Promise<ThemeTaxonomy[]> {
+  const totalBatches = Math.max(1, Math.ceil(reviews.length / ANALYSIS_BATCH_SIZE))
+  const sources: Array<ThemeTaxonomy & { id: string }> = []
+
+  for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
+    const offset = batchIdx * ANALYSIS_BATCH_SIZE
+    const batch = reviews.slice(offset, offset + ANALYSIS_BATCH_SIZE)
+    onProgress?.({ phase: 'batch', completedBatches: batchIdx, totalBatches })
+
+    const response = await fetch('/api/analyze', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reviews: batch, indexOffset: offset }),
+    })
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => null)
+      if (response.status === 401) {
+        throw new Error('Session expired. Refresh the page and unlock again.')
+      }
+      throw new Error(body?.error || `Analysis failed (HTTP ${response.status})`)
+    }
+
+    const data = await response.json() as { themes: ThemeTaxonomy[] }
+    for (let ti = 0; ti < data.themes.length; ti++) {
+      sources.push({ ...data.themes[ti], id: `b${batchIdx}t${ti}` })
+    }
+  }
+
+  // One batch already looks like a final taxonomy — skip the merge round-trip.
+  if (totalBatches === 1) {
+    return sources.map(({ id: _id, ...theme }) => theme)
+  }
+
+  onProgress?.({ phase: 'merge', completedBatches: totalBatches, totalBatches })
+
+  const mergeResponse = await fetch('/api/analyze', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mergeSources: sources }),
+  })
+
+  if (!mergeResponse.ok) {
+    const body = await mergeResponse.json().catch(() => null)
+    if (mergeResponse.status === 401) {
+      throw new Error('Session expired. Refresh the page and unlock again.')
+    }
+    throw new Error(body?.error || `Could not combine themes (HTTP ${mergeResponse.status})`)
+  }
+
+  const merged = await mergeResponse.json() as { themes: ThemeTaxonomy[] }
+  return merged.themes
+}
+
 /* ---------- Upload ---------- */
 
 const ANALYSIS_STEPS = [
@@ -766,15 +838,16 @@ function UploadCard(props: {
   error: string
   parseInfo: string
   loading: boolean
+  analysisProgress: AnalysisProgress | null
   onFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void
   onAnalyze: () => void
 }) {
-  const { file, error, parseInfo, loading, onFileChange, onAnalyze } = props
+  const { file, error, parseInfo, loading, analysisProgress, onFileChange, onAnalyze } = props
 
   if (loading) {
     return (
       <div className="w-full max-w-xl">
-        <AnalysisLoading />
+        <AnalysisLoading progress={analysisProgress} />
       </div>
     )
   }
@@ -811,7 +884,7 @@ function UploadCard(props: {
   )
 }
 
-function AnalysisLoading() {
+function AnalysisLoading({ progress }: { progress: AnalysisProgress | null }) {
   const [step, setStep] = useState(0)
 
   useEffect(() => {
@@ -821,7 +894,24 @@ function AnalysisLoading() {
     return () => window.clearInterval(id)
   }, [])
 
-  const progress = ((step + 1) / ANALYSIS_STEPS.length) * 100
+  const batchFraction = progress
+    ? progress.phase === 'merge'
+      ? 1
+      : progress.completedBatches / Math.max(progress.totalBatches, 1)
+    : null
+
+  // Batches fill most of the bar; the final merge is the last ~12%.
+  const progressPct = batchFraction == null
+    ? ((step + 1) / ANALYSIS_STEPS.length) * 100
+    : Math.min(99, Math.round(batchFraction * 88 + (progress?.phase === 'merge' ? 10 : 0)))
+
+  const statusLine = progress
+    ? progress.phase === 'merge'
+      ? 'Combining themes into one summary…'
+      : progress.totalBatches > 1
+        ? `Analysing batch ${Math.min(progress.completedBatches + 1, progress.totalBatches)} of ${progress.totalBatches}…`
+        : 'Analysing your reviews…'
+    : 'Analysing your reviews…'
 
   return (
     <div className="panel p-7 sm:p-8">
@@ -829,12 +919,12 @@ function AnalysisLoading() {
         <span className="text-lg font-extrabold tracking-tight text-ink">Timeleft</span>
         <span className="text-lg font-medium text-muted-dark">Review Analyser</span>
       </div>
-      <p className="text-sm text-muted-dark mb-6">Analysing your reviews…</p>
+      <p className="text-sm text-muted-dark mb-6">{statusLine}</p>
 
       <div className="h-1.5 rounded-full bg-tan overflow-hidden mb-7">
         <div
           className="h-full bg-accent transition-all duration-700 ease-out"
-          style={{ width: `${progress}%` }}
+          style={{ width: `${progressPct}%` }}
         />
       </div>
 
@@ -2093,6 +2183,121 @@ function TeamActions({ themes, total, trend, activeSlackTeam, setActiveSlackTeam
             </div>
           )}
         </div>
+      )}
+    </div>
+  )
+}
+
+/* ---------- Send monthly digest (Make webhook) ---------- */
+
+function SendMonthlyDigestButton({ results, filteredThemes, trend, regionLabel }: {
+  results: AnalysisResult
+  filteredThemes: Theme[]
+  trend: TrendData | null
+  regionLabel: string
+}) {
+  const [status, setStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
+  const [errorMsg, setErrorMsg] = useState('')
+
+  const send = async () => {
+    if (status === 'sending') return
+    setStatus('sending')
+    setErrorMsg('')
+
+    const pct = reportPct(results)
+    const payload = {
+      type: 'monthly_digest',
+      sentAt: new Date().toISOString(),
+      regionLabel,
+      totalReviews: results.totalReviews,
+      dateRange: results.dateRange,
+      sentiment: {
+        ...results.sentiment,
+        negativePct: pct(results.sentiment.negative),
+        neutralPct: pct(results.sentiment.neutral),
+        positivePct: pct(results.sentiment.positive),
+      },
+      themes: filteredThemes.map(t => {
+        const tTrend = themeTrend(trend, t)
+        return {
+          name: t.name,
+          team: t.team,
+          action: t.action,
+          count: t.count,
+          percentage: t.percentage,
+          impact: Math.round(t.impact * 100),
+          sentiment: t.sentiment,
+          priorDelta: tTrend?.delta ?? null,
+          quotes: t.quotes.slice(0, 2).map(q => ({
+            text: q.text,
+            rating: q.rating,
+            date: q.date,
+          })),
+        }
+      }),
+      trend: trend
+        ? {
+            priorTotal: trend.priorTotal,
+            volumeDelta: results.totalReviews - trend.priorTotal,
+          }
+        : null,
+      slackMessage: buildSlackReport(regionLabel, results, filteredThemes, trend),
+    }
+
+    try {
+      const response = await fetch('/api/digest', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const body = await response.json().catch(() => null) as { error?: string } | null
+      if (!response.ok) {
+        throw new Error(body?.error || `Send failed (HTTP ${response.status})`)
+      }
+      setStatus('sent')
+      window.setTimeout(() => setStatus('idle'), 2200)
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Send failed')
+      setStatus('error')
+      window.setTimeout(() => {
+        setStatus('idle')
+        setErrorMsg('')
+      }, 3200)
+    }
+  }
+
+  const label =
+    status === 'sending' ? 'Sending…'
+    : status === 'sent' ? 'Sent ✓'
+    : status === 'error' ? 'Failed'
+    : 'Send Monthly Digest'
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => void send()}
+        disabled={status === 'sending'}
+        aria-busy={status === 'sending'}
+        className={`btn-secondary min-w-[11.5rem] transition-all duration-200 ${
+          status === 'sending' ? 'opacity-70 scale-[0.98]' : ''
+        } ${status === 'sent' ? 'border-green-700 text-green-800' : ''} ${
+          status === 'error' ? 'border-red-400 text-red-700' : ''
+        }`}
+      >
+        {status === 'sending' && (
+          <span
+            className="inline-block h-3.5 w-3.5 rounded-full border-2 border-tan border-t-ink animate-spin"
+            aria-hidden
+          />
+        )}
+        {label}
+      </button>
+      {status === 'error' && errorMsg && (
+        <p className="absolute left-0 right-0 top-full mt-1.5 text-[11px] font-medium text-red-700 whitespace-nowrap">
+          {errorMsg}
+        </p>
       )}
     </div>
   )
