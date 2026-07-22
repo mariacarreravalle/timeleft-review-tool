@@ -1,12 +1,13 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { jsPDF } from 'jspdf'
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { parseReviewsCsv, type Review } from './lib/parseReviews'
 import {
   hashText, findCached, saveToCache, loadActive, saveActive, clearActive,
-  type CachedAnalysis, type SavedFilters
+  loadResolved, saveResolved, loadResolverProfile, saveResolverProfile,
+  type CachedAnalysis, type SavedFilters, type ResolvedMark
 } from './lib/persistence'
 
 type Team = 'Product' | 'Tech' | 'CX & Support' | 'Ops' | 'Marketing' | 'Other'
@@ -316,6 +317,9 @@ export default function Home() {
   // resume. See app/lib/persistence.ts.
   const [activeHash, setActiveHash] = useState<string | null>(null)
   const [resumeCandidate, setResumeCandidate] = useState<{ entry: CachedAnalysis; filters: SavedFilters } | null>(null)
+  const [resolvedThemes, setResolvedThemes] = useState<ResolvedMark[]>([])
+  const [resolvedOpen, setResolvedOpen] = useState(false)
+  const [resolvePrompt, setResolvePrompt] = useState<string | null>(null)
 
   // On mount, check for a resumable session from a previous visit (survives
   // a refresh) — offered, not auto-applied, so a deliberate fresh start isn't
@@ -333,6 +337,38 @@ export default function Home() {
     if (!activeHash) return
     saveActive(activeHash, { countries: selectedCountries, city: 'all', timeframe: selectedMonths, sentimentFilter, teamFilter, search })
   }, [activeHash, selectedCountries, selectedMonths, sentimentFilter, teamFilter, search])
+
+  useEffect(() => {
+    if (!activeHash) return
+    saveResolved(activeHash, resolvedThemes)
+  }, [activeHash, resolvedThemes])
+
+  const hydrateResolved = (csvHash: string) => {
+    setResolvedThemes(loadResolved(csvHash))
+    setResolvedOpen(false)
+  }
+
+  const requestResolve = (themeName: string) => {
+    if (resolvedThemes.some(m => m.themeName === themeName)) {
+      setResolvedThemes(prev => prev.filter(m => m.themeName !== themeName))
+      return
+    }
+    setResolvePrompt(themeName)
+  }
+
+  const confirmResolve = (byName: string, byTeam: string) => {
+    if (!resolvePrompt) return
+    const mark: ResolvedMark = {
+      themeName: resolvePrompt,
+      byName: byName.trim(),
+      byTeam: byTeam.trim(),
+      fixedAt: new Date().toISOString(),
+    }
+    saveResolverProfile({ name: mark.byName, team: mark.byTeam })
+    setResolvedThemes(prev => [...prev.filter(m => m.themeName !== mark.themeName), mark])
+    setResolvePrompt(null)
+    setResolvedOpen(true)
+  }
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
@@ -364,6 +400,7 @@ export default function Home() {
         setSelectedCountries([])
         setSelectedMonths([])
         setActiveHash(csvHash)
+        hydrateResolved(csvHash)
         saveActive(csvHash, { countries: [], city: 'all', timeframe: [], sentimentFilter: 'all', teamFilter: 'all', search: '' })
         setParseInfo(`✓ Recognised this exact file from a previous analysis (${cached.reviews.length} reviews, analysed ${formatRelativeTime(cached.analyzedAt)}) — reused instantly, no re-analysis needed.`)
         setResumeCandidate(null)
@@ -410,6 +447,7 @@ export default function Home() {
         hasCityData: !!detectedColumns.city
       })
       setActiveHash(csvHash)
+      hydrateResolved(csvHash)
       saveActive(csvHash, { countries: [], city: 'all', timeframe: [], sentimentFilter: 'all', teamFilter: 'all', search: '' })
       setResumeCandidate(null)
     } catch (err) {
@@ -430,6 +468,7 @@ export default function Home() {
     setTeamFilter(filters.teamFilter as TeamFilter)
     setSearch(filters.search)
     setActiveHash(entry.csvHash)
+    hydrateResolved(entry.csvHash)
     setParseInfo(`✓ Resumed previous analysis (${entry.reviews.length} reviews, analysed ${formatRelativeTime(entry.analyzedAt)}).`)
     setResumeCandidate(null)
   }
@@ -451,6 +490,8 @@ export default function Home() {
     setSelectedCountries([])
     setSelectedMonths([])
     setActiveHash(null)
+    setResolvedThemes([])
+    setResolvedOpen(false)
     clearActive()
   }
 
@@ -500,7 +541,7 @@ export default function Home() {
               <span className="text-2xl font-medium text-muted-dark">Review Analyser</span>
             </div>
             <p className="text-muted-dark mt-1">
-              Upload app store reviews → instant, evidence-backed clarity for Ops, Product &amp; Growth.
+              Drop in your app-store review CSV. We group issues by theme, score how people feel, flag what needs fixing first, and point each one to the right team.
             </p>
           </div>
           {resumeCandidate && (
@@ -539,7 +580,7 @@ export default function Home() {
                 <span className="text-2xl font-medium text-muted-dark">Review Analyser</span>
               </div>
               <p className="text-muted-dark mt-1">
-                Upload app store reviews → instant, evidence-backed clarity for Ops, Product &amp; Growth.
+                Drop in your app-store review CSV. We group issues by theme, score how people feel, flag what needs fixing first, and point each one to the right team.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -581,14 +622,45 @@ export default function Home() {
             setActiveSlackTeam={setActiveSlackTeam}
             copied={copied}
             setCopied={setCopied}
+            resolvedThemes={resolvedThemes}
+            onResolveToggle={requestResolve}
+            resolvedOpen={resolvedOpen}
+            setResolvedOpen={setResolvedOpen}
           />
         </div>
+      )}
+
+      {resolvePrompt && (
+        <ResolvePromptModal
+          themeName={resolvePrompt}
+          onCancel={() => setResolvePrompt(null)}
+          onConfirm={confirmResolve}
+        />
       )}
     </main>
   )
 }
 
 /* ---------- Upload ---------- */
+
+const ANALYSIS_STEPS = [
+  {
+    title: 'Sorting the map',
+    detail: 'We split the data by country and date.',
+  },
+  {
+    title: 'Reading the room',
+    detail: 'AI rates review sentiment from frustrated to delighted.',
+  },
+  {
+    title: 'Ranking the fire',
+    detail: 'We flag urgent matters so you know what to fix first.',
+  },
+  {
+    title: 'Action plan',
+    detail: 'Route each issue to the teams responsible.',
+  },
+] as const
 
 function UploadCard(props: {
   file: File | null
@@ -600,34 +672,94 @@ function UploadCard(props: {
 }) {
   const { file, error, parseInfo, loading, onFileChange, onAnalyze } = props
   return (
-    <div className="bg-white rounded-3xl border border-tan p-10 w-full max-w-2xl">
-      <div className="border-2 border-dashed border-tan rounded-2xl p-10 text-center hover:border-accent transition">
-        <input type="file" accept=".csv" onChange={onFileChange} className="hidden" id="csv-input" />
-        <label htmlFor="csv-input" className="cursor-pointer block">
-          <div className="text-5xl mb-4">📊</div>
-          <p className="text-lg font-semibold text-ink">{file ? file.name : 'Drag & drop CSV, or click to select'}</p>
-        </label>
+    <div className="w-full max-w-2xl space-y-4">
+      <div className="bg-white rounded-3xl border border-tan p-10">
+        <div className={`border-2 border-dashed border-tan rounded-2xl p-10 text-center transition ${loading ? '' : 'hover:border-accent'}`}>
+          <input type="file" accept=".csv" onChange={onFileChange} className="hidden" id="csv-input" disabled={loading} />
+          <label htmlFor="csv-input" className={`block ${loading ? 'cursor-default' : 'cursor-pointer'}`}>
+            <div className="text-5xl mb-4">📊</div>
+            <p className="text-lg font-semibold text-ink">{file ? file.name : 'Drag & drop CSV, or click to select'}</p>
+          </label>
+        </div>
+
+        {error && <p className="text-red-600 mt-4 text-center font-medium">{error}</p>}
+        {parseInfo && !error && !loading && <p className="text-xs text-muted-dark mt-4 text-center">✓ {parseInfo}</p>}
+
+        {!loading && (
+          <button
+            onClick={onAnalyze}
+            disabled={!file}
+            className="w-full mt-6 rounded-pill bg-ink hover:bg-black disabled:bg-muted disabled:cursor-not-allowed text-cream font-semibold py-3.5 px-6 transition"
+          >
+            Analyse reviews
+          </button>
+        )}
       </div>
 
-      {error && <p className="text-red-600 mt-4 text-center font-medium">{error}</p>}
-      {parseInfo && !error && !loading && <p className="text-xs text-muted-dark mt-4 text-center">✓ {parseInfo}</p>}
+      {loading && <AnalysisLoading />}
+    </div>
+  )
+}
 
-      {loading ? (
-        <div className="mt-6 rounded-2xl border border-tan bg-cream p-6 text-center">
-          <div className="flex items-center justify-center gap-3">
-            <span className="inline-block h-4 w-4 rounded-full border-2 border-accent border-t-transparent animate-spin" />
-            <span className="font-semibold text-ink">Analysing your reviews…</span>
-          </div>
-        </div>
-      ) : (
-        <button
-          onClick={onAnalyze}
-          disabled={!file}
-          className="w-full mt-6 rounded-pill bg-ink hover:bg-black disabled:bg-muted disabled:cursor-not-allowed text-cream font-semibold py-3.5 px-6 transition"
-        >
-          Analyse reviews
-        </button>
-      )}
+function AnalysisLoading() {
+  const [step, setStep] = useState(0)
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setStep(s => Math.min(s + 1, ANALYSIS_STEPS.length - 1))
+    }, 5000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  const progress = ((step + 1) / ANALYSIS_STEPS.length) * 100
+
+  return (
+    <div className="bg-white rounded-3xl border border-tan p-8">
+      <div className="flex items-baseline gap-2 mb-1">
+        <span className="text-lg font-extrabold tracking-tight text-ink">Timeleft</span>
+        <span className="text-lg font-medium text-muted-dark">Review Analyser</span>
+      </div>
+      <p className="text-sm text-muted-dark mb-5">Analysing your reviews…</p>
+
+      <div className="h-1.5 rounded-full bg-tan overflow-hidden mb-6">
+        <div
+          className="h-full bg-accent transition-all duration-700 ease-out"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+
+      <ol className="space-y-4">
+        {ANALYSIS_STEPS.map((item, i) => {
+          const done = i < step
+          const active = i === step
+          return (
+            <li key={item.title} className="flex gap-3 items-start">
+              <span
+                className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+                  done
+                    ? 'bg-ink text-cream'
+                    : active
+                      ? 'bg-accent text-white'
+                      : 'bg-tan text-muted-dark'
+                }`}
+              >
+                {done ? '✓' : i + 1}
+              </span>
+              <div className="min-w-0">
+                <p className={`text-sm font-semibold ${active || done ? 'text-ink' : 'text-muted-dark'}`}>
+                  {item.title}
+                  {active && (
+                    <span className="inline-block ml-2 h-3 w-3 rounded-full border-2 border-accent border-t-transparent animate-spin align-[-2px]" />
+                  )}
+                </p>
+                <p className={`text-sm mt-0.5 ${active ? 'text-muted-dark' : 'text-muted'}`}>
+                  {item.detail}
+                </p>
+              </div>
+            </li>
+          )
+        })}
+      </ol>
     </div>
   )
 }
@@ -894,16 +1026,50 @@ function Dashboard(props: {
   setActiveSlackTeam: (t: Team | null) => void
   copied: boolean
   setCopied: (b: boolean) => void
+  resolvedThemes: ResolvedMark[]
+  onResolveToggle: (themeName: string) => void
+  resolvedOpen: boolean
+  setResolvedOpen: (o: boolean) => void
 }) {
   const {
     results, filteredThemes, trend, search, setSearch, sentimentFilter, setSentimentFilter,
     teamFilter, setTeamFilter, expanded, setExpanded, activeSlackTeam, setActiveSlackTeam, copied, setCopied,
+    resolvedThemes, onResolveToggle, resolvedOpen, setResolvedOpen,
   } = props
 
+  const resolvedByName = useMemo(() => {
+    const map = new Map<string, ResolvedMark>()
+    resolvedThemes.forEach(m => map.set(m.themeName, m))
+    return map
+  }, [resolvedThemes])
+  const openThemes = filteredThemes.filter(t => !resolvedByName.has(t.name))
+  const doneThemes = filteredThemes.filter(t => resolvedByName.has(t.name))
+
   const total = results.totalReviews
-  const topUrgent = results.themes[0] // already ranked by impact
+  const topUrgent = results.themes.find(t => !resolvedByName.has(t.name)) || null
   const rated = results.sentiment.negative + results.sentiment.neutral + results.sentiment.positive
   const volumeDelta = trend && trend.priorTotal > 0 ? total - trend.priorTotal : null
+
+  const renderTheme = (theme: Theme, resolved: boolean) => {
+    const rank = results.themes.indexOf(theme) + 1
+    const isOpen = expanded === rank
+    const priorCount = trend && trend.priorTotal > 0 ? trend.priorCounts.get(theme.name) ?? 0 : null
+    const trendDelta = priorCount === null ? null : theme.count - priorCount
+    return (
+      <ThemeRow
+        key={theme.name}
+        theme={theme}
+        rank={rank}
+        total={total}
+        isOpen={isOpen}
+        onToggle={() => setExpanded(isOpen ? null : rank)}
+        trendDelta={trendDelta}
+        resolved={resolved}
+        resolvedMark={resolvedByName.get(theme.name) || null}
+        onToggleResolved={() => onResolveToggle(theme.name)}
+      />
+    )
+  }
 
   return (
     <div className="space-y-6">
@@ -937,9 +1103,7 @@ function Dashboard(props: {
           )}
         </MetricCard>
 
-        <MetricCard label="Sentiment (from star ratings)">
-          <SentimentBar breakdown={results.sentiment} rated={rated} />
-        </MetricCard>
+        <SentimentMetricCard breakdown={results.sentiment} rated={rated} />
 
         <MetricCard label="Most urgent issue">
           {topUrgent ? (
@@ -964,13 +1128,7 @@ function Dashboard(props: {
 
       {/* B. Controls + theme dashboard */}
       <div className="bg-white rounded-3xl border border-tan p-7">
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
-          <div>
-            <h2 className="text-xl font-bold text-ink">Themes, ranked by impact</h2>
-            <p className="text-sm text-muted-dark">Volume × sentiment × urgency. Click a theme for the exact quotes behind it.</p>
-            <p className="text-xs text-muted mt-1">Themes are multi-label — a review can mention more than one, so shares don&apos;t sum to 100%. Counts are AI-classified across all reviews.</p>
-          </div>
-        </div>
+        <ThemesSectionHeader />
 
         {/* search + filters */}
         <div className="flex flex-col gap-3 mt-4 mb-5">
@@ -996,28 +1154,35 @@ function Dashboard(props: {
           </div>
         </div>
 
-        {filteredThemes.length === 0 ? (
+        {openThemes.length === 0 && doneThemes.length === 0 ? (
           <p className="text-sm text-muted-dark py-6 text-center">No themes match these filters.</p>
         ) : (
           <div className="space-y-3">
-            {filteredThemes.map((theme) => {
-              // rank by position in the full ranked list
-              const rank = results.themes.indexOf(theme) + 1
-              const isOpen = expanded === rank
-              const priorCount = trend && trend.priorTotal > 0 ? trend.priorCounts.get(theme.name) ?? 0 : null
-              const trendDelta = priorCount === null ? null : theme.count - priorCount
-              return (
-                <ThemeRow
-                  key={theme.name}
-                  theme={theme}
-                  rank={rank}
-                  total={total}
-                  isOpen={isOpen}
-                  onToggle={() => setExpanded(isOpen ? null : rank)}
-                  trendDelta={trendDelta}
-                />
-              )
-            })}
+            {openThemes.length === 0 ? (
+              <p className="text-sm text-muted-dark py-4 text-center border border-dashed border-tan rounded-2xl">
+                All matching themes are marked as solved.
+              </p>
+            ) : (
+              openThemes.map(theme => renderTheme(theme, false))
+            )}
+
+            {doneThemes.length > 0 && (
+              <div className="pt-3">
+                <button
+                  type="button"
+                  onClick={() => setResolvedOpen(!resolvedOpen)}
+                  className="w-full flex items-center justify-between rounded-2xl border border-tan bg-cream/60 px-4 py-3 text-sm font-semibold text-muted-dark hover:text-ink transition"
+                >
+                  <span>Resolved ({doneThemes.length})</span>
+                  <span>{resolvedOpen ? 'Hide ▲' : 'Show ▼'}</span>
+                </button>
+                {resolvedOpen && (
+                  <div className="space-y-3 mt-3">
+                    {doneThemes.map(theme => renderTheme(theme, true))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1052,7 +1217,7 @@ function Dashboard(props: {
 
       {/* C. Action plan by team */}
       <TeamActions
-        themes={results.themes}
+        themes={results.themes.filter(t => !resolvedByName.has(t.name))}
         total={total}
         trend={trend}
         activeSlackTeam={activeSlackTeam}
@@ -1061,6 +1226,207 @@ function Dashboard(props: {
         setCopied={setCopied}
       />
     </div>
+  )
+}
+
+function ThemesSectionHeader() {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className="flex items-center gap-2 mb-2">
+      <h2 className="text-xl font-bold text-ink">Themes, ranked by impact</h2>
+      <InfoLightbulb onClick={() => setOpen(true)} />
+      {open && (
+        <HowCalculatedDialog onClose={() => setOpen(false)} titleId="themes-how-calculated">
+          <section>
+            <h4 className="font-semibold text-ink mb-1">1. Themes</h4>
+            <p>
+              AI reads every review in your CSV and groups them into a handful of concrete themes
+              (for example “subscription pricing” or “app crashes”). A single review can belong to
+              more than one theme, so percentages don’t have to add up to 100%. Each theme also gets
+              an owner team and a suggested next step.
+            </p>
+          </section>
+
+          <section>
+            <h4 className="font-semibold text-ink mb-1">2. Sentiment</h4>
+            <p>
+              Sentiment comes from star ratings in the export — not from guessing the tone of the text.
+              1–2★ count as frustrated, 3★ as mixed, and 4–5★ as delighted. For each theme we average
+              the ratings of the reviews inside it, so you can see whether that topic is dragging mood down.
+            </p>
+          </section>
+
+          <section>
+            <h4 className="font-semibold text-ink mb-1">3. Impact (urgency score)</h4>
+            <p className="mb-2">
+              Impact is a 0–100 score that decides the ranking. It’s built from three signals:
+            </p>
+            <ul className="list-disc pl-5 space-y-1.5">
+              <li><span className="font-semibold text-ink">60% volume</span> — how many reviewers mention this theme</li>
+              <li><span className="font-semibold text-ink">25% negativity</span> — how low the average rating is for those reviews</li>
+              <li><span className="font-semibold text-ink">15% urgency language</span> — a bonus if reviews use words like cancel, refund, crash, charge, or uninstall</li>
+            </ul>
+          </section>
+
+          <section>
+            <h4 className="font-semibold text-ink mb-1">4. What you should do with it</h4>
+            <p>
+              Themes at the top of the list are the ones hitting the most people with the worst mood —
+              start there. Click any theme to read the exact quotes behind it, then use “Select the team
+              responsible” to hand the work to the right owners.
+            </p>
+          </section>
+        </HowCalculatedDialog>
+      )}
+    </div>
+  )
+}
+
+function SentimentMetricCard({ breakdown, rated }: { breakdown: AnalysisResult['sentiment']; rated: number }) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className="bg-white rounded-3xl border border-tan p-6">
+      <div className="flex items-center gap-1.5 mb-3">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-dark">Sentiment (from star ratings)</p>
+        <InfoLightbulb onClick={() => setOpen(true)} className="h-6 w-6" />
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        title="How it's calculated"
+        aria-label="How sentiment is calculated"
+        className="w-full text-left rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        <SentimentBar breakdown={breakdown} rated={rated} />
+      </button>
+
+      {open && (
+        <HowCalculatedDialog onClose={() => setOpen(false)} titleId="sentiment-how-calculated">
+          <section>
+            <h4 className="font-semibold text-ink mb-1">Where the bar comes from</h4>
+            <p>
+              This bar is built only from star ratings in your CSV — we don’t infer mood from the written
+              text here. Every review with a rating is sorted into one bucket, then shown as a share of
+              all rated reviews.
+            </p>
+          </section>
+
+          <section>
+            <h4 className="font-semibold text-ink mb-1">The three buckets</h4>
+            <ul className="list-disc pl-5 space-y-1.5">
+              <li><span className="font-semibold text-ink">Frustrated (😞)</span> — 1★ and 2★ reviews</li>
+              <li><span className="font-semibold text-ink">Mixed (😐)</span> — 3★ reviews</li>
+              <li><span className="font-semibold text-ink">Delighted (😊)</span> — 4★ and 5★ reviews</li>
+            </ul>
+            <p className="mt-2">
+              Reviews with no rating are left out of the percentages, so the three segments always add up to 100%
+              of rated reviews.
+            </p>
+          </section>
+
+          <section>
+            <h4 className="font-semibold text-ink mb-1">How this differs from theme sentiment</h4>
+            <p>
+              The bar above is the whole slice you’re viewing (country + timeframe). Theme-level sentiment
+              is different: for each theme we average the star ratings of only the reviews tagged to that theme,
+              which is why one theme can look worse than the overall bar.
+            </p>
+          </section>
+
+          <section>
+            <h4 className="font-semibold text-ink mb-1">How to read it quickly</h4>
+            <p>
+              A fat red/frustrated segment means lots of low scores in this view — dig into the top themes
+              ranked by impact to see what’s driving it. A mostly green/delighted bar means scores are healthy,
+              even if some themes still need attention.
+            </p>
+          </section>
+        </HowCalculatedDialog>
+      )}
+    </div>
+  )
+}
+
+function InfoLightbulb({ onClick, className = 'h-8 w-8' }: { onClick: () => void; className?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="How it's calculated"
+      aria-label="How it's calculated"
+      className={`inline-flex items-center justify-center rounded-full text-muted-dark hover:text-accent hover:bg-cream transition ${className}`}
+    >
+      <LightbulbIcon />
+    </button>
+  )
+}
+
+function HowCalculatedDialog({
+  onClose,
+  titleId,
+  children,
+}: {
+  onClose: () => void
+  titleId: string
+  children: React.ReactNode
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 px-4"
+      onClick={onClose}
+      role="presentation"
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="bg-white rounded-3xl border border-tan shadow-xl max-w-lg w-full max-h-[85vh] overflow-y-auto p-7"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <h3 id={titleId} className="text-lg font-bold text-ink">How it&apos;s calculated</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="text-muted-dark hover:text-ink text-xl leading-none px-1"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="space-y-5 text-sm text-muted-dark leading-relaxed">
+          {children}
+        </div>
+
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-6 w-full rounded-pill bg-ink hover:bg-black text-cream font-semibold py-2.5 text-sm transition"
+        >
+          Got it
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function LightbulbIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M9 18h6" />
+      <path d="M10 22h4" />
+      <path d="M12 2a7 7 0 0 0-4 12.7V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.3A7 7 0 0 0 12 2z" />
+    </svg>
   )
 }
 
@@ -1122,49 +1488,86 @@ function FilterGroup({ label, value, onChange, options }: {
   )
 }
 
-function ThemeRow({ theme, rank, total, isOpen, onToggle, trendDelta }: {
+function formatFixedDate(iso: string): string {
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return ''
+  const dd = String(d.getDate()).padStart(2, '0')
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const yy = String(d.getFullYear()).slice(-2)
+  return `${dd}/${mm}/${yy}`
+}
+
+function ThemeRow({ theme, rank, total, isOpen, onToggle, trendDelta, resolved, resolvedMark, onToggleResolved }: {
   theme: Theme
   rank: number
   total: number
   isOpen: boolean
   onToggle: () => void
   trendDelta: number | null
+  resolved: boolean
+  resolvedMark: ResolvedMark | null
+  onToggleResolved: () => void
 }) {
   return (
-    <div className="rounded-2xl border border-tan overflow-hidden">
-      <button onClick={onToggle} className="w-full text-left p-5 hover:bg-cream transition flex gap-4 items-start">
-        <span className="text-lg font-extrabold text-muted w-6 shrink-0">{rank}</span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-semibold text-ink">{theme.name}</span>
-            <TeamBadge team={theme.team} />
-            <span className="text-sm">{sentimentEmoji(theme.sentiment)}</span>
-            {theme.count <= THEME_LOW_CONFIDENCE_MAX && (
-              <span className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-pill px-2 py-0.5 font-semibold">
-                ⚠ low sample (n={theme.count})
-              </span>
+    <div className={`rounded-2xl border overflow-hidden transition ${resolved ? 'border-tan/70 bg-cream/40 opacity-80' : 'border-tan bg-white'}`}>
+      <div className="flex items-stretch">
+        <button
+          type="button"
+          onClick={onToggle}
+          className={`min-w-0 flex-1 text-left p-5 transition flex gap-4 items-start ${resolved ? '' : 'hover:bg-cream'}`}
+        >
+          <span className="text-lg font-extrabold text-muted w-6 shrink-0">{rank}</span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={`font-semibold ${resolved ? 'text-muted-dark line-through' : 'text-ink'}`}>{theme.name}</span>
+              <TeamBadge team={theme.team} />
+              <span className="text-sm">{sentimentEmoji(theme.sentiment)}</span>
+              {!resolved && theme.count <= THEME_LOW_CONFIDENCE_MAX && (
+                <span className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-pill px-2 py-0.5 font-semibold">
+                  ⚠ low sample (n={theme.count})
+                </span>
+              )}
+            </div>
+            {resolved && resolvedMark && (
+              <p className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-semibold text-info bg-white border border-tan rounded-pill px-2.5 py-0.5">
+                <span aria-hidden>✓</span>
+                <span>by {resolvedMark.byName} in {resolvedMark.byTeam}, {formatFixedDate(resolvedMark.fixedAt)}</span>
+              </p>
             )}
-          </div>
-          {/* Evidence sentence — the quantitative "why" */}
-          <p className="text-sm text-muted-dark mt-1">
-            <span className="font-semibold text-ink">{theme.percentage}% of reviewers mention this</span> ({theme.count} of {total}) — {theme.action || 'flagged this theme'}
-          </p>
-          {/* impact bar */}
-          <div className="mt-2 h-1.5 rounded-full bg-tan overflow-hidden max-w-xs">
-            <div className="h-full bg-accent" style={{ width: `${Math.round(theme.impact * 100)}%` }} />
-          </div>
-        </div>
-        <div className="text-right shrink-0" title={IMPACT_FORMULA_TOOLTIP}>
-          <p className="text-2xl font-extrabold text-accent">{Math.round(theme.impact * 100)}</p>
-          <p className="text-[11px] text-muted-dark">impact ⓘ</p>
-          {trendDelta !== null && (
-            <p className={`text-[11px] font-semibold mt-0.5 ${trendDelta > 0 ? 'text-accent' : trendDelta < 0 ? 'text-info' : 'text-muted-dark'}`}>
-              {trendDelta > 0 ? '▲' : trendDelta < 0 ? '▼' : '–'} {trendDelta === 0 ? 'no change' : `${trendDelta > 0 ? '+' : ''}${trendDelta} vs prior`}
+            <p className="text-sm text-muted-dark mt-1">
+              <span className={`font-semibold ${resolved ? 'text-muted-dark' : 'text-ink'}`}>{theme.percentage}% of reviewers mention this</span> ({theme.count} of {total}) — {theme.action || 'flagged this theme'}
             </p>
-          )}
-          <p className="text-[11px] text-accent mt-1">{isOpen ? 'Hide quotes ▲' : 'Show quotes ▼'}</p>
+            <div className="mt-2 h-1.5 rounded-full bg-tan overflow-hidden max-w-xs">
+              <div className={`h-full ${resolved ? 'bg-muted' : 'bg-accent'}`} style={{ width: `${Math.round(theme.impact * 100)}%` }} />
+            </div>
+          </div>
+          <div className="text-right shrink-0" title={IMPACT_FORMULA_TOOLTIP}>
+            <p className={`text-2xl font-extrabold ${resolved ? 'text-muted' : 'text-accent'}`}>{Math.round(theme.impact * 100)}</p>
+            <p className="text-[11px] text-muted-dark">impact ⓘ</p>
+            {trendDelta !== null && (
+              <p className={`text-[11px] font-semibold mt-0.5 ${trendDelta > 0 ? 'text-accent' : trendDelta < 0 ? 'text-info' : 'text-muted-dark'}`}>
+                {trendDelta > 0 ? '▲' : trendDelta < 0 ? '▼' : '–'} {trendDelta === 0 ? 'no change' : `${trendDelta > 0 ? '+' : ''}${trendDelta} vs prior`}
+              </p>
+            )}
+            <p className="text-[11px] text-accent mt-1">{isOpen ? 'Hide quotes ▲' : 'Show quotes ▼'}</p>
+          </div>
+        </button>
+
+        <div className="shrink-0 flex items-start p-4 pl-0">
+          <button
+            type="button"
+            onClick={e => { e.stopPropagation(); onToggleResolved() }}
+            className={`rounded-pill px-3 py-1.5 text-xs font-semibold border transition whitespace-nowrap ${
+              resolved
+                ? 'bg-white text-muted-dark border-tan hover:border-ink hover:text-ink'
+                : 'bg-cream text-ink border-tan hover:border-accent'
+            }`}
+            title={resolved ? 'Move back to open issues' : 'Mark as solved so teammates skip it'}
+          >
+            {resolved ? 'Reopen' : 'Mark as solved'}
+          </button>
         </div>
-      </button>
+      </div>
 
       {isOpen && (
         <div className="px-5 pb-5 pt-1 bg-cream border-t border-tan">
@@ -1178,6 +1581,107 @@ function ThemeRow({ theme, rank, total, isOpen, onToggle, trendDelta }: {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function ResolvePromptModal({
+  themeName,
+  onCancel,
+  onConfirm,
+}: {
+  themeName: string
+  onCancel: () => void
+  onConfirm: (name: string, team: string) => void
+}) {
+  const [name, setName] = useState('')
+  const [team, setTeam] = useState<string>('Product')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    const profile = loadResolverProfile()
+    if (profile) {
+      setName(profile.name)
+      setTeam(profile.team)
+    }
+  }, [])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onCancel])
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    if (!name.trim()) {
+      setError('Please enter your name')
+      return
+    }
+    if (!team.trim()) {
+      setError('Please choose your team')
+      return
+    }
+    onConfirm(name.trim(), team.trim())
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 px-4"
+      onClick={onCancel}
+      role="presentation"
+    >
+      <form
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="resolve-prompt-title"
+        onSubmit={submit}
+        onClick={e => e.stopPropagation()}
+        className="bg-white rounded-3xl border border-tan shadow-xl max-w-md w-full p-7"
+      >
+        <h3 id="resolve-prompt-title" className="text-lg font-bold text-ink mb-1">Mark as solved</h3>
+        <p className="text-sm text-muted-dark mb-5">
+          Stamp <span className="font-semibold text-ink">“{themeName}”</span> with who fixed it, so the next person knows it&apos;s handled.
+        </p>
+
+        <label htmlFor="resolver-name" className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-1.5">Your name</label>
+        <input
+          id="resolver-name"
+          autoFocus
+          value={name}
+          onChange={e => { setName(e.target.value); if (error) setError('') }}
+          placeholder="e.g. Alex"
+          className="w-full rounded-pill border border-tan bg-cream px-5 py-2.5 text-sm text-ink placeholder:text-muted focus:outline-none focus:border-accent mb-4"
+        />
+
+        <label htmlFor="resolver-team" className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-1.5">Your team</label>
+        <select
+          id="resolver-team"
+          value={team}
+          onChange={e => setTeam(e.target.value)}
+          className="w-full rounded-pill border border-tan bg-cream px-5 py-2.5 text-sm font-semibold text-ink focus:outline-none focus:border-accent cursor-pointer mb-2"
+        >
+          {TEAMS.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+
+        {error && <p className="text-sm font-medium text-red-600 mt-2" role="alert">{error}</p>}
+
+        <div className="flex gap-2 mt-5">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="flex-1 rounded-pill border border-tan bg-white text-ink font-semibold py-2.5 text-sm hover:border-accent transition"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            className="flex-1 rounded-pill bg-ink hover:bg-black text-cream font-semibold py-2.5 text-sm transition"
+          >
+            Confirm solved
+          </button>
+        </div>
+      </form>
     </div>
   )
 }
@@ -1204,52 +1708,93 @@ function TeamActions({ themes, total, trend, activeSlackTeam, setActiveSlackTeam
     .map(team => ({ team, items: themes.filter(t => t.team === team) }))
     .filter(g => g.items.length > 0)
 
+  const selected = byTeam.find(g => g.team === activeSlackTeam) || null
+  const [showSlack, setShowSlack] = useState(false)
+
+  const selectTeam = (team: Team) => {
+    setActiveSlackTeam(team)
+    setShowSlack(false)
+    setCopied(false)
+  }
+
   return (
     <div className="bg-white rounded-3xl border border-tan p-7">
-      <h2 className="text-xl font-bold text-ink mb-1">Action plan by team</h2>
+      <h2 className="text-xl font-bold text-ink mb-1">Select the team responsible</h2>
       <p className="text-sm text-muted-dark mb-5">
-        Delegate each theme to its owner. Draft a Slack update per team, or wire the same payload into a MAKE scenario for a recurring digest.
+        Pick your team to see only the actions that belong to you.
       </p>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        {byTeam.map(({ team, items }) => (
-          <div key={team} className="rounded-2xl border border-tan p-5">
-            <div className="flex items-center justify-between mb-3">
-              <TeamBadge team={team} />
-              <span className="text-xs text-muted-dark">{items.length} {items.length === 1 ? 'theme' : 'themes'}</span>
-            </div>
-            <ul className="space-y-2 mb-4">
-              {items.map(t => (
-                <li key={t.name} className="text-sm">
-                  <span className="font-semibold text-ink">{t.name}</span>
-                  <span className="text-muted-dark"> — {t.percentage}% · </span>
-                  <span className="text-ink">{t.action || 'review flagged theme'}</span>
-                </li>
-              ))}
-            </ul>
+      <div className="flex flex-wrap gap-2 mb-6">
+        {byTeam.map(({ team, items }) => {
+          const isActive = activeSlackTeam === team
+          return (
             <button
-              onClick={() => { setActiveSlackTeam(activeSlackTeam === team ? null : team); setCopied(false) }}
-              className="rounded-pill bg-accent hover:bg-orange-600 text-white font-semibold py-2 px-4 text-sm transition"
+              key={team}
+              type="button"
+              onClick={() => selectTeam(team)}
+              className={`rounded-pill px-4 py-2 text-sm font-semibold transition border inline-flex items-center gap-2 ${
+                isActive
+                  ? 'bg-ink text-cream border-ink'
+                  : 'bg-white text-ink border-tan hover:border-accent'
+              }`}
             >
-              {activeSlackTeam === team ? 'Hide Slack draft' : `Draft Slack for ${team}`}
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: TEAM_DOT[team] }} />
+              {team}
+              <span className={`text-xs ${isActive ? 'text-cream/70' : 'text-muted-dark'}`}>{items.length}</span>
             </button>
-
-            {activeSlackTeam === team && (
-              <div className="mt-3">
-                <div className="bg-ink rounded-2xl p-4 font-mono text-xs text-cream whitespace-pre-wrap max-h-56 overflow-y-auto">
-                  {buildTeamSlack(team, items, total, trend)}
-                </div>
-                <button
-                  onClick={() => { navigator.clipboard.writeText(buildTeamSlack(team, items, total, trend)); setCopied(true); setTimeout(() => setCopied(false), 2000) }}
-                  className="mt-2 rounded-pill bg-ink text-cream font-semibold py-1.5 px-4 text-xs hover:bg-black transition"
-                >
-                  {copied ? 'Copied ✓' : 'Copy to clipboard'}
-                </button>
-              </div>
-            )}
-          </div>
-        ))}
+          )
+        })}
       </div>
+
+      {!selected ? (
+        <p className="text-sm text-muted-dark py-4 text-center border border-dashed border-tan rounded-2xl">
+          Choose a team above to see its action items.
+        </p>
+      ) : (
+        <div className="rounded-2xl border border-tan p-5">
+          <div className="flex items-center justify-between mb-4">
+            <TeamBadge team={selected.team} />
+            <span className="text-xs text-muted-dark">
+              {selected.items.length} {selected.items.length === 1 ? 'theme' : 'themes'}
+            </span>
+          </div>
+
+          <ul className="space-y-3 mb-5">
+            {selected.items.map(t => (
+              <li key={t.name} className="text-sm">
+                <span className="font-semibold text-ink">{t.name}</span>
+                <span className="text-muted-dark"> — {t.percentage}% · </span>
+                <span className="text-ink">{t.action || 'review flagged theme'}</span>
+              </li>
+            ))}
+          </ul>
+
+          <button
+            onClick={() => { setShowSlack(s => !s); setCopied(false) }}
+            className="rounded-pill bg-accent hover:bg-orange-600 text-white font-semibold py-2 px-4 text-sm transition"
+          >
+            {showSlack ? 'Hide Slack draft' : `Draft Slack for ${selected.team}`}
+          </button>
+
+          {showSlack && (
+            <div className="mt-3">
+              <div className="bg-ink rounded-2xl p-4 font-mono text-xs text-cream whitespace-pre-wrap max-h-56 overflow-y-auto">
+                {buildTeamSlack(selected.team, selected.items, total, trend)}
+              </div>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(buildTeamSlack(selected.team, selected.items, total, trend))
+                  setCopied(true)
+                  setTimeout(() => setCopied(false), 2000)
+                }}
+                className="mt-2 rounded-pill bg-ink text-cream font-semibold py-1.5 px-4 text-xs hover:bg-black transition"
+              >
+                {copied ? 'Copied ✓' : 'Copy to clipboard'}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
