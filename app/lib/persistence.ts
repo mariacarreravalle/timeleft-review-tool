@@ -23,8 +23,10 @@ export interface SavedFilters {
   countries: string[]
   city: string
   timeframe: string | string[]
-  sentimentFilter: string
-  teamFilter: string
+  /** Empty / missing / `'all'` = all. Also accepts a legacy single value. */
+  sentimentFilter: string | string[]
+  /** Empty / missing / `'all'` = all. Also accepts a legacy single value. */
+  teamFilter: string | string[]
   search: string
 }
 

@@ -12,6 +12,8 @@ import {
 
 type Team = 'Product' | 'Tech' | 'CX & Support' | 'Ops' | 'Marketing' | 'Other'
 
+const TEAMS: Team[] = ['Product', 'Tech', 'CX & Support', 'Ops', 'Marketing', 'Other']
+
 interface Theme {
   name: string
   count: number
@@ -40,9 +42,34 @@ interface AnalysisResult {
   dateRange: { earliest: string; latest: string } | null
 }
 
-type SentimentFilter = 'all' | 'negative' | 'neutral' | 'positive'
-type TeamFilter = 'all' | Team
+type SentimentKey = 'negative' | 'neutral' | 'positive'
 type MonthKey = '2025-09' | '2025-10' | '2025-11'
+
+const SENTIMENT_OPTIONS: Array<[SentimentKey, string]> = [
+  ['negative', 'Negative'],
+  ['neutral', 'Neutral'],
+  ['positive', 'Positive'],
+]
+
+const SENTIMENT_KEYS = new Set<SentimentKey>(['negative', 'neutral', 'positive'])
+
+function isSentimentKey(v: string): v is SentimentKey {
+  return SENTIMENT_KEYS.has(v as SentimentKey)
+}
+
+/** Empty array = all sentiments. Migrates older single-value filter strings. */
+function normalizeSentiments(raw: string | string[] | undefined | null): SentimentKey[] {
+  if (Array.isArray(raw)) return raw.filter(isSentimentKey)
+  if (!raw || raw === 'all') return []
+  return isSentimentKey(raw) ? [raw] : []
+}
+
+/** Empty array = all teams. Migrates older single-value filter strings. */
+function normalizeTeams(raw: string | string[] | undefined | null): Team[] {
+  if (Array.isArray(raw)) return raw.filter((t): t is Team => (TEAMS as string[]).includes(t))
+  if (!raw || raw === 'all') return []
+  return (TEAMS as string[]).includes(raw) ? [raw as Team] : []
+}
 
 const MONTH_OPTIONS: Array<[MonthKey, string]> = [
   ['2025-09', 'Sep 25'],
@@ -94,8 +121,6 @@ function inTimeframe(dateStr: string, selectedMonths: MonthKey[]): boolean {
   const key = monthKey(dateStr)
   return !!key && selectedMonths.includes(key as MonthKey)
 }
-
-const TEAMS: Team[] = ['Product', 'Tech', 'CX & Support', 'Ops', 'Marketing', 'Other']
 
 const REGION_NAMES = typeof Intl !== 'undefined' && 'DisplayNames' in Intl
   ? new Intl.DisplayNames(['en-GB'], { type: 'region' })
@@ -304,10 +329,10 @@ export default function Home() {
   const [selectedCountries, setSelectedCountries] = useState<string[]>([])
   const [selectedMonths, setSelectedMonths] = useState<MonthKey[]>([])
 
-  // dashboard controls
+  // dashboard controls (empty sentiment / team arrays = all)
   const [search, setSearch] = useState('')
-  const [sentimentFilter, setSentimentFilter] = useState<SentimentFilter>('all')
-  const [teamFilter, setTeamFilter] = useState<TeamFilter>('all')
+  const [sentimentFilter, setSentimentFilter] = useState<SentimentKey[]>([])
+  const [teamFilter, setTeamFilter] = useState<Team[]>([])
   const [expanded, setExpanded] = useState<number | null>(null)
   const [activeSlackTeam, setActiveSlackTeam] = useState<Team | null>(null)
   const [copied, setCopied] = useState(false)
@@ -399,9 +424,12 @@ export default function Home() {
         setTaxonomy(cached.taxonomy as ThemeTaxonomy[])
         setSelectedCountries([])
         setSelectedMonths([])
+        setSentimentFilter([])
+        setTeamFilter([])
+        setSearch('')
         setActiveHash(csvHash)
         hydrateResolved(csvHash)
-        saveActive(csvHash, { countries: [], city: 'all', timeframe: [], sentimentFilter: 'all', teamFilter: 'all', search: '' })
+        saveActive(csvHash, { countries: [], city: 'all', timeframe: [], sentimentFilter: [], teamFilter: [], search: '' })
         setParseInfo(`✓ Recognised this exact file from a previous analysis (${cached.reviews.length} reviews, analysed ${formatRelativeTime(cached.analyzedAt)}) — reused instantly, no re-analysis needed.`)
         setResumeCandidate(null)
         setLoading(false)
@@ -437,6 +465,9 @@ export default function Home() {
       setTaxonomy(data.themes)
       setSelectedCountries([])
       setSelectedMonths([])
+      setSentimentFilter([])
+      setTeamFilter([])
+      setSearch('')
 
       saveToCache({
         csvHash,
@@ -448,7 +479,7 @@ export default function Home() {
       })
       setActiveHash(csvHash)
       hydrateResolved(csvHash)
-      saveActive(csvHash, { countries: [], city: 'all', timeframe: [], sentimentFilter: 'all', teamFilter: 'all', search: '' })
+      saveActive(csvHash, { countries: [], city: 'all', timeframe: [], sentimentFilter: [], teamFilter: [], search: '' })
       setResumeCandidate(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Analysis failed')
@@ -464,8 +495,8 @@ export default function Home() {
     setTaxonomy(entry.taxonomy as ThemeTaxonomy[])
     setSelectedCountries(filters.countries)
     setSelectedMonths(normalizeMonths(filters.timeframe))
-    setSentimentFilter(filters.sentimentFilter as SentimentFilter)
-    setTeamFilter(filters.teamFilter as TeamFilter)
+    setSentimentFilter(normalizeSentiments(filters.sentimentFilter))
+    setTeamFilter(normalizeTeams(filters.teamFilter))
     setSearch(filters.search)
     setActiveHash(entry.csvHash)
     hydrateResolved(entry.csvHash)
@@ -483,8 +514,8 @@ export default function Home() {
     setTaxonomy(null)
     setFile(null)
     setSearch('')
-    setSentimentFilter('all')
-    setTeamFilter('all')
+    setSentimentFilter([])
+    setTeamFilter([])
     setExpanded(null)
     setActiveSlackTeam(null)
     setSelectedCountries([])
@@ -519,8 +550,8 @@ export default function Home() {
     if (!view) return []
     const q = search.trim().toLowerCase()
     return view.themes.filter(t => {
-      if (sentimentFilter !== 'all' && sentimentBucket(t.sentiment) !== sentimentFilter) return false
-      if (teamFilter !== 'all' && t.team !== teamFilter) return false
+      if (sentimentFilter.length > 0 && !sentimentFilter.includes(sentimentBucket(t.sentiment))) return false
+      if (teamFilter.length > 0 && !teamFilter.includes(t.team)) return false
       if (q) {
         const hay = (t.name + ' ' + t.action + ' ' + t.team + ' ' + t.quotes.join(' ')).toLowerCase()
         if (!hay.includes(q)) return false
@@ -673,12 +704,21 @@ function UploadCard(props: {
   onAnalyze: () => void
 }) {
   const { file, error, parseInfo, loading, onFileChange, onAnalyze } = props
+
+  if (loading) {
+    return (
+      <div className="w-full max-w-xl">
+        <AnalysisLoading />
+      </div>
+    )
+  }
+
   return (
-    <div className="w-full max-w-xl space-y-5">
+    <div className="w-full max-w-xl">
       <div className="panel p-8 sm:p-10">
-        <div className={`border border-dashed border-tan rounded-2xl px-6 py-12 text-center transition ${loading ? 'opacity-70' : 'hover:border-accent hover:bg-cream/40'}`}>
-          <input type="file" accept=".csv" onChange={onFileChange} className="hidden" id="csv-input" disabled={loading} />
-          <label htmlFor="csv-input" className={`block ${loading ? 'cursor-default' : 'cursor-pointer'}`}>
+        <div className="border border-dashed border-tan rounded-2xl px-6 py-12 text-center transition hover:border-accent hover:bg-cream/40">
+          <input type="file" accept=".csv" onChange={onFileChange} className="hidden" id="csv-input" />
+          <label htmlFor="csv-input" className="block cursor-pointer">
             <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-cream border border-tan text-accent">
               <UploadIcon />
             </div>
@@ -690,21 +730,17 @@ function UploadCard(props: {
         </div>
 
         {error && <p className="text-red-600 mt-5 text-center text-sm font-medium">{error}</p>}
-        {parseInfo && !error && !loading && <p className="text-xs text-muted-dark mt-5 text-center">✓ {parseInfo}</p>}
+        {parseInfo && !error && <p className="text-xs text-muted-dark mt-5 text-center">✓ {parseInfo}</p>}
 
-        {!loading && (
-          <button
-            type="button"
-            onClick={onAnalyze}
-            disabled={!file}
-            className="btn-primary w-full mt-7"
-          >
-            Analyse reviews
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={onAnalyze}
+          disabled={!file}
+          className="btn-primary w-full mt-7"
+        >
+          Analyse reviews
+        </button>
       </div>
-
-      {loading && <AnalysisLoading />}
     </div>
   )
 }
@@ -1034,10 +1070,10 @@ function Dashboard(props: {
   trend: TrendData | null
   search: string
   setSearch: (s: string) => void
-  sentimentFilter: SentimentFilter
-  setSentimentFilter: (s: SentimentFilter) => void
-  teamFilter: TeamFilter
-  setTeamFilter: (t: TeamFilter) => void
+  sentimentFilter: SentimentKey[]
+  setSentimentFilter: (s: SentimentKey[]) => void
+  teamFilter: Team[]
+  setTeamFilter: (t: Team[]) => void
   expanded: number | null
   setExpanded: (n: number | null) => void
   activeSlackTeam: Team | null
@@ -1156,19 +1192,29 @@ function Dashboard(props: {
             placeholder="Search themes, quotes, actions…"
             className="w-full h-9 rounded-pill border border-tan bg-cream px-5 text-sm text-ink placeholder:text-muted focus:outline-none focus:border-accent"
           />
-          <div className="flex flex-wrap gap-x-6 gap-y-3">
-            <FilterGroup
-              label="Sentiment"
-              value={sentimentFilter}
-              onChange={v => setSentimentFilter(v as SentimentFilter)}
-              options={[['all', 'All'], ['negative', 'Negative'], ['neutral', 'Neutral'], ['positive', 'Positive']]}
-            />
-            <FilterGroup
-              label="Team"
-              value={teamFilter}
-              onChange={v => setTeamFilter(v as TeamFilter)}
-              options={[['all', 'All'], ...TEAMS.map(t => [t, t] as [string, string])]}
-            />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-2">Sentiment</label>
+              <ChipMultiSelect
+                selected={sentimentFilter}
+                onChange={setSentimentFilter}
+                options={SENTIMENT_OPTIONS}
+                emptyLabel="All sentiments"
+                addLabel="Add sentiment…"
+                ariaLabel="Filter by sentiment"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-2">Team</label>
+              <ChipMultiSelect
+                selected={teamFilter}
+                onChange={setTeamFilter}
+                options={TEAMS.map(t => [t, t] as [Team, string])}
+                emptyLabel="All teams"
+                addLabel="Add team…"
+                ariaLabel="Filter by team"
+              />
+            </div>
           </div>
         </div>
 
@@ -1480,29 +1526,124 @@ function SentimentBar({ breakdown, rated }: { breakdown: AnalysisResult['sentime
   )
 }
 
-function FilterGroup({ label, value, onChange, options }: {
-  label: string
-  value: string
-  onChange: (v: string) => void
-  options: Array<[string, string]>
+function ChipMultiSelect<T extends string>({
+  selected,
+  onChange,
+  options,
+  emptyLabel,
+  addLabel,
+  ariaLabel,
+}: {
+  selected: T[]
+  onChange: (next: T[]) => void
+  options: Array<[T, string]>
+  emptyLabel: string
+  addLabel: string
+  ariaLabel: string
 }) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [])
+
+  const labelByValue = useMemo(() => new Map(options), [options])
+  const selectedSet = useMemo(() => new Set(selected), [selected])
+  const remaining = options.filter(([value]) => !selectedSet.has(value))
+  const allSelected = selected.length === 0 || selected.length === options.length
+
+  const add = (value: T) => {
+    const next = [...selected, value]
+    onChange(next.length === options.length ? [] : next)
+    setOpen(true)
+  }
+
+  const remove = (value: T) => {
+    onChange(selected.filter(v => v !== value))
+  }
+
   return (
-    <div className="flex items-center gap-2.5 flex-wrap">
-      {label && <span className="text-xs font-semibold uppercase tracking-wide text-muted-dark shrink-0">{label}</span>}
-      <div className="flex flex-wrap gap-1.5">
-        {options.map(([val, lab]) => (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="relative w-full min-h-9 rounded-pill border border-tan bg-cream px-3 py-1.5 flex flex-wrap items-center gap-1.5 text-left focus:outline-none focus:border-accent"
+        aria-label={ariaLabel}
+        aria-expanded={open}
+      >
+        {allSelected ? (
+          <span className="text-sm text-muted-dark px-1">{emptyLabel}</span>
+        ) : (
+          selected.map(value => (
+            <span
+              key={value}
+              className="inline-flex items-center gap-1 rounded-pill bg-white border border-tan pl-2.5 pr-1 py-0.5 text-xs font-semibold text-ink"
+            >
+              {labelByValue.get(value) || value}
+              <span
+                role="button"
+                tabIndex={0}
+                aria-label={`Remove ${labelByValue.get(value) || value}`}
+                onClick={e => { e.stopPropagation(); remove(value) }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    remove(value)
+                  }
+                }}
+                className="h-5 w-5 rounded-full hover:bg-tan text-muted-dark hover:text-ink transition leading-none inline-flex items-center justify-center cursor-pointer"
+              >
+                ×
+              </span>
+            </span>
+          ))
+        )}
+        {!allSelected && remaining.length > 0 && (
+          <span className="text-xs text-muted px-1">{addLabel}</span>
+        )}
+        <span className="ml-auto text-muted-dark shrink-0 text-xs px-1">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="absolute left-0 right-0 top-full mt-1.5 z-30 rounded-2xl border border-tan bg-white py-1.5 shadow-lg">
           <button
-            key={val}
             type="button"
-            onClick={() => onChange(val)}
-            className={`rounded-pill h-7 px-3 text-xs font-semibold transition border whitespace-nowrap ${
-              value === val ? 'bg-ink text-cream border-ink' : 'bg-white text-muted-dark border-tan hover:border-accent'
-            }`}
+            onClick={() => { onChange([]); setOpen(false) }}
+            className="w-full text-left px-4 py-2.5 text-sm font-semibold text-ink hover:bg-cream transition flex items-center gap-2.5"
           >
-            {lab}
+            <span className={`inline-flex h-4 w-4 items-center justify-center rounded border ${allSelected ? 'bg-ink border-ink text-cream' : 'border-tan bg-white'}`}>
+              {allSelected ? '✓' : ''}
+            </span>
+            All
           </button>
-        ))}
-      </div>
+          <div className="my-1 border-t border-tan" />
+          {options.map(([value, label]) => {
+            const checked = !allSelected && selectedSet.has(value)
+            return (
+              <button
+                key={value}
+                type="button"
+                onClick={() => {
+                  if (checked) remove(value)
+                  else add(value)
+                }}
+                className="w-full text-left px-4 py-2.5 text-sm font-semibold text-ink hover:bg-cream transition flex items-center gap-2.5"
+              >
+                <span className={`inline-flex h-4 w-4 items-center justify-center rounded border text-[11px] ${checked ? 'bg-ink border-ink text-cream' : 'border-tan bg-white'}`}>
+                  {checked ? '✓' : ''}
+                </span>
+                {label}
+              </button>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
