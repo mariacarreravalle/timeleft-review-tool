@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { parseReviewsCsv, type Review } from './lib/parseReviews'
@@ -41,24 +41,41 @@ interface AnalysisResult {
 
 type SentimentFilter = 'all' | 'negative' | 'neutral' | 'positive'
 type TeamFilter = 'all' | Team
-type Timeframe = 'all' | '2025-09' | '2025-10' | '2025-11'
+type MonthKey = '2025-09' | '2025-10' | '2025-11'
 
-const TIMEFRAME_LABEL: Record<Timeframe, string> = {
-  all: 'All',
+const MONTH_OPTIONS: Array<[MonthKey, string]> = [
+  ['2025-09', 'Sep 25'],
+  ['2025-10', 'Oct 25'],
+  ['2025-11', 'Nov 25'],
+]
+
+const MONTH_LABEL: Record<MonthKey, string> = {
   '2025-09': 'Sep 25',
   '2025-10': 'Oct 25',
   '2025-11': 'Nov 25',
 }
 
-/** Prior calendar month for trend deltas (only months present in this export). */
-const PRIOR_TIMEFRAME: Partial<Record<Timeframe, Timeframe>> = {
+/** Prior calendar month for trend deltas (only when a single month is selected). */
+const PRIOR_MONTH: Partial<Record<MonthKey, MonthKey>> = {
   '2025-10': '2025-09',
   '2025-11': '2025-10',
 }
 
-function normalizeTimeframe(t: string): Timeframe {
-  if (t === 'all' || t === '2025-09' || t === '2025-10' || t === '2025-11') return t
-  return 'all'
+function isMonthKey(t: string): t is MonthKey {
+  return t === '2025-09' || t === '2025-10' || t === '2025-11'
+}
+
+/** Empty array = all months. Migrates older single-value timeframe strings. */
+function normalizeMonths(raw: string | string[] | undefined | null): MonthKey[] {
+  if (Array.isArray(raw)) return raw.filter(isMonthKey)
+  if (!raw || raw === 'all') return []
+  return isMonthKey(raw) ? [raw] : []
+}
+
+function monthsLabel(selected: MonthKey[]): string {
+  if (selected.length === 0 || selected.length === MONTH_OPTIONS.length) return 'All'
+  if (selected.length === 1) return MONTH_LABEL[selected[0]]
+  return selected.map(m => MONTH_LABEL[m]).join(', ')
 }
 
 /** YYYY-MM from a review date string (prefers the literal prefix to avoid TZ shifts). */
@@ -71,15 +88,16 @@ function monthKey(dateStr: string): string | null {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
 }
 
-function inTimeframe(dateStr: string, timeframe: Timeframe): boolean {
-  if (timeframe === 'all') return true
-  return monthKey(dateStr) === timeframe
+function inTimeframe(dateStr: string, selectedMonths: MonthKey[]): boolean {
+  if (selectedMonths.length === 0) return true
+  const key = monthKey(dateStr)
+  return !!key && selectedMonths.includes(key as MonthKey)
 }
 
 const TEAMS: Team[] = ['Product', 'Tech', 'CX & Support', 'Ops', 'Marketing', 'Other']
 
 const REGION_NAMES = typeof Intl !== 'undefined' && 'DisplayNames' in Intl
-  ? new Intl.DisplayNames(['en'], { type: 'region' })
+  ? new Intl.DisplayNames(['en-GB'], { type: 'region' })
   : null
 
 function countryName(code: string): string {
@@ -165,14 +183,25 @@ function volumeChart(reviews: Review[]) {
   return Object.entries(byDate).sort(([a], [b]) => a.localeCompare(b)).map(([date, count]) => ({ date, count })).slice(-30)
 }
 
+function matchesCountries(reviewCountry: string, selected: string[]): boolean {
+  return selected.length === 0 || selected.includes(reviewCountry)
+}
+
+function countriesLabel(selected: string[]): string {
+  if (selected.length === 0) return 'All countries'
+  if (selected.length === 1) return countryName(selected[0])
+  if (selected.length <= 3) return selected.map(countryName).join(', ')
+  return `${selected.length} countries`
+}
+
 // Re-slice the whole dashboard for the selected country/city, client-side.
 // Themes keep the AI taxonomy but every number (count, %, sentiment, impact,
 // quotes) is recomputed from the reviews that fall in the current region.
-function computeView(reviews: Review[], taxonomy: ThemeTaxonomy[], country: string, city: string, timeframe: Timeframe): AnalysisResult {
+function computeView(reviews: Review[], taxonomy: ThemeTaxonomy[], selectedCountries: string[], city: string, selectedMonths: MonthKey[]): AnalysisResult {
   const inRegion = (r: Review) =>
-    (country === 'all' || r.country === country) &&
+    matchesCountries(r.country, selectedCountries) &&
     (city === 'all' || r.city === city) &&
-    inTimeframe(r.date, timeframe)
+    inTimeframe(r.date, selectedMonths)
 
   const regionIdx = new Set<number>()
   reviews.forEach((r, i) => { if (inRegion(r)) regionIdx.add(i) })
@@ -217,17 +246,18 @@ interface TrendData {
   priorCounts: Map<string, number> // theme name -> count in the prior equivalent window
 }
 
-// Compares the selected calendar month against the previous month in the
-// export (Oct→Sep, Nov→Oct). Sep and "all" have no prior window.
-function computeTrend(reviews: Review[], taxonomy: ThemeTaxonomy[], country: string, city: string, timeframe: Timeframe): TrendData | null {
-  const prior = PRIOR_TIMEFRAME[timeframe]
+// Compares a single selected calendar month against the previous month in the
+// export (Oct→Sep, Nov→Oct). All / multi-month selections have no prior window.
+function computeTrend(reviews: Review[], taxonomy: ThemeTaxonomy[], selectedCountries: string[], city: string, selectedMonths: MonthKey[]): TrendData | null {
+  if (selectedMonths.length !== 1) return null
+  const prior = PRIOR_MONTH[selectedMonths[0]]
   if (!prior) return null
 
-  const inRegion = (r: Review) => (country === 'all' || r.country === country) && (city === 'all' || r.city === city)
+  const inRegion = (r: Review) => matchesCountries(r.country, selectedCountries) && (city === 'all' || r.city === city)
 
   const priorIdx = new Set<number>()
   reviews.forEach((r, i) => {
-    if (!inRegion(r) || !inTimeframe(r.date, prior)) return
+    if (!inRegion(r) || !inTimeframe(r.date, [prior])) return
     priorIdx.add(i)
   })
 
@@ -269,9 +299,9 @@ export default function Home() {
   // plus the AI theme taxonomy. The displayed dashboard is derived from these.
   const [reviews, setReviews] = useState<Review[]>([])
   const [taxonomy, setTaxonomy] = useState<ThemeTaxonomy[] | null>(null)
-  // region controls + timeframe
-  const [country, setCountry] = useState('all')
-  const [timeframe, setTimeframe] = useState<Timeframe>('all')
+  // region controls (empty countries / months = all)
+  const [selectedCountries, setSelectedCountries] = useState<string[]>([])
+  const [selectedMonths, setSelectedMonths] = useState<MonthKey[]>([])
 
   // dashboard controls
   const [search, setSearch] = useState('')
@@ -301,8 +331,8 @@ export default function Home() {
   // analysis is open, so a refresh restores not just the data but the view.
   useEffect(() => {
     if (!activeHash) return
-    saveActive(activeHash, { country, city: 'all', timeframe, sentimentFilter, teamFilter, search })
-  }, [activeHash, country, timeframe, sentimentFilter, teamFilter, search])
+    saveActive(activeHash, { countries: selectedCountries, city: 'all', timeframe: selectedMonths, sentimentFilter, teamFilter, search })
+  }, [activeHash, selectedCountries, selectedMonths, sentimentFilter, teamFilter, search])
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0]
@@ -324,18 +354,18 @@ export default function Home() {
       const text = await file.text()
       const csvHash = hashText(text)
 
-      // Same file already analyzed on this browser — reuse the exact same
+      // Same file already analysed on this browser — reuse the exact same
       // taxonomy instead of re-clustering. This is what makes repeat uploads
       // of the same export comparable rather than independently reworded.
       const cached = findCached(csvHash)
       if (cached) {
         setReviews(cached.reviews)
         setTaxonomy(cached.taxonomy as ThemeTaxonomy[])
-        setCountry('all')
-        setTimeframe('all')
+        setSelectedCountries([])
+        setSelectedMonths([])
         setActiveHash(csvHash)
-        saveActive(csvHash, { country: 'all', city: 'all', timeframe: 'all', sentimentFilter: 'all', teamFilter: 'all', search: '' })
-        setParseInfo(`✓ Recognized this exact file from a previous analysis (${cached.reviews.length} reviews, analyzed ${formatRelativeTime(cached.analyzedAt)}) — reused instantly, no re-analysis needed.`)
+        saveActive(csvHash, { countries: [], city: 'all', timeframe: [], sentimentFilter: 'all', teamFilter: 'all', search: '' })
+        setParseInfo(`✓ Recognised this exact file from a previous analysis (${cached.reviews.length} reviews, analysed ${formatRelativeTime(cached.analyzedAt)}) — reused instantly, no re-analysis needed.`)
         setResumeCandidate(null)
         setLoading(false)
         return
@@ -368,8 +398,8 @@ export default function Home() {
       const data = await response.json() as { themes: ThemeTaxonomy[] }
       setReviews(parsedReviews)
       setTaxonomy(data.themes)
-      setCountry('all')
-      setTimeframe('all')
+      setSelectedCountries([])
+      setSelectedMonths([])
 
       saveToCache({
         csvHash,
@@ -380,7 +410,7 @@ export default function Home() {
         hasCityData: !!detectedColumns.city
       })
       setActiveHash(csvHash)
-      saveActive(csvHash, { country: 'all', city: 'all', timeframe: 'all', sentimentFilter: 'all', teamFilter: 'all', search: '' })
+      saveActive(csvHash, { countries: [], city: 'all', timeframe: [], sentimentFilter: 'all', teamFilter: 'all', search: '' })
       setResumeCandidate(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Analysis failed')
@@ -394,13 +424,13 @@ export default function Home() {
     const { entry, filters } = resumeCandidate
     setReviews(entry.reviews)
     setTaxonomy(entry.taxonomy as ThemeTaxonomy[])
-    setCountry(filters.country)
-    setTimeframe(normalizeTimeframe(filters.timeframe))
+    setSelectedCountries(filters.countries)
+    setSelectedMonths(normalizeMonths(filters.timeframe))
     setSentimentFilter(filters.sentimentFilter as SentimentFilter)
     setTeamFilter(filters.teamFilter as TeamFilter)
     setSearch(filters.search)
     setActiveHash(entry.csvHash)
-    setParseInfo(`✓ Resumed previous analysis (${entry.reviews.length} reviews, analyzed ${formatRelativeTime(entry.analyzedAt)}).`)
+    setParseInfo(`✓ Resumed previous analysis (${entry.reviews.length} reviews, analysed ${formatRelativeTime(entry.analyzedAt)}).`)
     setResumeCandidate(null)
   }
 
@@ -418,8 +448,8 @@ export default function Home() {
     setTeamFilter('all')
     setExpanded(null)
     setActiveSlackTeam(null)
-    setCountry('all')
-    setTimeframe('all')
+    setSelectedCountries([])
+    setSelectedMonths([])
     setActiveHash(null)
     clearActive()
   }
@@ -433,15 +463,15 @@ export default function Home() {
 
   // The entire dashboard is derived from this region-sliced view.
   const view = useMemo(
-    () => (taxonomy ? computeView(reviews, taxonomy, country, 'all', timeframe) : null),
-    [taxonomy, reviews, country, timeframe]
+    () => (taxonomy ? computeView(reviews, taxonomy, selectedCountries, 'all', selectedMonths) : null),
+    [taxonomy, reviews, selectedCountries, selectedMonths]
   )
 
   // Prior-period comparison for the same region, only meaningful once a
   // specific timeframe window is picked (see computeTrend).
   const trend = useMemo(
-    () => (taxonomy ? computeTrend(reviews, taxonomy, country, 'all', timeframe) : null),
-    [taxonomy, reviews, country, timeframe]
+    () => (taxonomy ? computeTrend(reviews, taxonomy, selectedCountries, 'all', selectedMonths) : null),
+    [taxonomy, reviews, selectedCountries, selectedMonths]
   )
 
   const filteredThemes = useMemo(() => {
@@ -458,7 +488,7 @@ export default function Home() {
     })
   }, [view, search, sentimentFilter, teamFilter])
 
-  const onCountryChange = (c: string) => { setCountry(c); setExpanded(null) }
+  const onCountriesChange = (next: string[]) => { setSelectedCountries(next); setExpanded(null) }
 
   return (
     <main className="min-h-screen bg-cream">
@@ -467,7 +497,7 @@ export default function Home() {
           <div className="text-center mb-8">
             <div className="flex items-baseline justify-center gap-2">
               <span className="text-2xl font-extrabold tracking-tight text-ink">Timeleft</span>
-              <span className="text-2xl font-medium text-muted-dark">Review Analyzer</span>
+              <span className="text-2xl font-medium text-muted-dark">Review Analyser</span>
             </div>
             <p className="text-muted-dark mt-1">
               Upload app store reviews → instant, evidence-backed clarity for Ops, Product &amp; Growth.
@@ -478,7 +508,7 @@ export default function Home() {
               <div>
                 <p className="font-semibold text-ink">Resume your last analysis?</p>
                 <p className="text-sm text-muted-dark">
-                  {resumeCandidate.entry.filename} · {resumeCandidate.entry.reviews.length} reviews · analyzed {formatRelativeTime(resumeCandidate.entry.analyzedAt)}
+                  {resumeCandidate.entry.filename} · {resumeCandidate.entry.reviews.length} reviews · analysed {formatRelativeTime(resumeCandidate.entry.analyzedAt)}
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
@@ -506,7 +536,7 @@ export default function Home() {
             <div>
               <div className="flex items-baseline gap-2">
                 <span className="text-2xl font-extrabold tracking-tight text-ink">Timeleft</span>
-                <span className="text-2xl font-medium text-muted-dark">Review Analyzer</span>
+                <span className="text-2xl font-medium text-muted-dark">Review Analyser</span>
               </div>
               <p className="text-muted-dark mt-1">
                 Upload app store reviews → instant, evidence-backed clarity for Ops, Product &amp; Growth.
@@ -517,7 +547,7 @@ export default function Home() {
                 results={view}
                 filteredThemes={filteredThemes}
                 trend={trend}
-                regionLabel={`${country === 'all' ? 'All countries' : countryName(country)} · ${TIMEFRAME_LABEL[timeframe]}`}
+                regionLabel={`${countriesLabel(selectedCountries)} · ${monthsLabel(selectedMonths)}`}
               />
               <button onClick={resetAll} className="rounded-pill bg-ink text-cream font-semibold text-sm px-5 py-2.5 hover:bg-black transition">
                 ← New upload
@@ -527,10 +557,10 @@ export default function Home() {
 
           <RegionFilter
             countries={countries}
-            country={country}
-            onCountryChange={onCountryChange}
-            timeframe={timeframe}
-            setTimeframe={t => { setTimeframe(t); setExpanded(null) }}
+            selectedCountries={selectedCountries}
+            onCountriesChange={onCountriesChange}
+            selectedMonths={selectedMonths}
+            onMonthsChange={m => { setSelectedMonths(m); setExpanded(null) }}
             totalAll={reviews.length}
             totalRegion={view.totalReviews}
           />
@@ -575,8 +605,7 @@ function UploadCard(props: {
         <input type="file" accept=".csv" onChange={onFileChange} className="hidden" id="csv-input" />
         <label htmlFor="csv-input" className="cursor-pointer block">
           <div className="text-5xl mb-4">📊</div>
-          <p className="text-lg font-semibold text-ink mb-2">{file ? file.name : 'Drag & drop CSV, or click to select'}</p>
-          <p className="text-sm text-muted-dark">Needs: Review / Translated review, Rating, Submission date</p>
+          <p className="text-lg font-semibold text-ink">{file ? file.name : 'Drag & drop CSV, or click to select'}</p>
         </label>
       </div>
 
@@ -585,12 +614,10 @@ function UploadCard(props: {
 
       {loading ? (
         <div className="mt-6 rounded-2xl border border-tan bg-cream p-6 text-center">
-          <div className="flex items-center justify-center gap-3 mb-2">
+          <div className="flex items-center justify-center gap-3">
             <span className="inline-block h-4 w-4 rounded-full border-2 border-accent border-t-transparent animate-spin" />
             <span className="font-semibold text-ink">Analysing your reviews…</span>
           </div>
-          <p className="text-sm text-muted-dark">Classifying every review into themes, scoring sentiment &amp; urgency. Usually 15–25 seconds.</p>
-          {parseInfo && <p className="text-xs text-muted-dark mt-3">✓ {parseInfo}</p>}
         </div>
       ) : (
         <button
@@ -598,7 +625,7 @@ function UploadCard(props: {
           disabled={!file}
           className="w-full mt-6 rounded-pill bg-ink hover:bg-black disabled:bg-muted disabled:cursor-not-allowed text-cream font-semibold py-3.5 px-6 transition"
         >
-          Analyze reviews
+          Analyse reviews
         </button>
       )}
     </div>
@@ -609,52 +636,242 @@ function UploadCard(props: {
 
 function RegionFilter(props: {
   countries: Array<[string, number]>
-  country: string
-  onCountryChange: (c: string) => void
-  timeframe: Timeframe
-  setTimeframe: (t: Timeframe) => void
+  selectedCountries: string[]
+  onCountriesChange: (codes: string[]) => void
+  selectedMonths: MonthKey[]
+  onMonthsChange: (months: MonthKey[]) => void
   totalAll: number
   totalRegion: number
 }) {
-  const { countries, country, onCountryChange, timeframe, setTimeframe, totalAll, totalRegion } = props
+  const { countries, selectedCountries, onCountriesChange, selectedMonths, onMonthsChange, totalAll, totalRegion } = props
 
   return (
     <div className="bg-white rounded-3xl border border-tan p-5 mb-6">
       <div className="flex flex-col md:flex-row md:items-end gap-4">
-        <div className="flex-1">
-          <label className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-1.5">Country / market</label>
-          <select
-            value={country}
-            onChange={e => onCountryChange(e.target.value)}
-            className="w-full rounded-pill border border-tan bg-cream px-5 py-2.5 text-sm font-semibold text-ink focus:outline-none focus:border-accent cursor-pointer"
-          >
-            <option value="all">All countries ({totalAll})</option>
-            {countries.map(([code, count]) => (
-              <option key={code} value={code}>{countryName(code)} ({count})</option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-1.5">Timeframe</label>
-          <FilterGroup
-            label=""
-            value={timeframe}
-            onChange={v => setTimeframe(v as Timeframe)}
-            options={[['all', 'All'], ['2025-09', 'Sep 25'], ['2025-10', 'Oct 25'], ['2025-11', 'Nov 25']]}
+        <div className="flex-1 min-w-0">
+          <label className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-1.5">Country</label>
+          <CountryMultiSelect
+            countries={countries}
+            selected={selectedCountries}
+            onChange={onCountriesChange}
+            totalAll={totalAll}
           />
         </div>
 
-        <div className="md:pb-2 md:text-right">
+        <div className="w-full md:w-56 shrink-0">
+          <label className="block text-xs font-semibold uppercase tracking-wide text-muted-dark mb-1.5">Timeframe</label>
+          <TimeframeMultiSelect selected={selectedMonths} onChange={onMonthsChange} />
+        </div>
+
+        <div className="md:pb-2 md:text-right shrink-0">
           <p className="text-xs text-muted-dark">Showing</p>
           <p className="text-lg font-extrabold text-ink leading-tight">
             {totalRegion.toLocaleString()}<span className="text-sm font-medium text-muted-dark"> / {totalAll.toLocaleString()}</span>
           </p>
           <p className="text-[11px] text-muted-dark">
-            {country === 'all' ? 'all markets' : countryName(country)} · {TIMEFRAME_LABEL[timeframe]}
+            {countriesLabel(selectedCountries)} · {monthsLabel(selectedMonths)}
           </p>
         </div>
       </div>
+    </div>
+  )
+}
+
+function TimeframeMultiSelect({
+  selected,
+  onChange,
+}: {
+  selected: MonthKey[]
+  onChange: (months: MonthKey[]) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const allSelected = selected.length === 0 || selected.length === MONTH_OPTIONS.length
+
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [])
+
+  const toggleMonth = (month: MonthKey) => {
+    if (selected.includes(month)) {
+      const next = selected.filter(m => m !== month)
+      onChange(next.length === MONTH_OPTIONS.length ? [] : next)
+    } else {
+      const next = [...selected, month]
+      onChange(next.length === MONTH_OPTIONS.length ? [] : next)
+    }
+  }
+
+  const selectAll = () => onChange([])
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full rounded-pill border border-tan bg-cream px-5 py-2.5 text-sm font-semibold text-ink focus:outline-none focus:border-accent cursor-pointer text-left flex items-center justify-between gap-2"
+      >
+        <span className="truncate">{monthsLabel(selected)}</span>
+        <span className="text-muted-dark shrink-0">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="absolute left-0 right-0 top-full mt-1.5 z-30 rounded-2xl border border-tan bg-white py-1.5 shadow-lg">
+          <button
+            type="button"
+            onClick={selectAll}
+            className="w-full text-left px-4 py-2.5 text-sm font-semibold text-ink hover:bg-cream transition flex items-center gap-2.5"
+          >
+            <span className={`inline-flex h-4 w-4 items-center justify-center rounded border ${allSelected ? 'bg-ink border-ink text-cream' : 'border-tan bg-white'}`}>
+              {allSelected ? '✓' : ''}
+            </span>
+            All
+          </button>
+          <div className="my-1 border-t border-tan" />
+          {MONTH_OPTIONS.map(([key, label]) => {
+            const checked = !allSelected && selected.includes(key)
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => toggleMonth(key)}
+                className="w-full text-left px-4 py-2.5 text-sm font-semibold text-ink hover:bg-cream transition flex items-center gap-2.5"
+              >
+                <span className={`inline-flex h-4 w-4 items-center justify-center rounded border text-[11px] ${checked ? 'bg-ink border-ink text-cream' : 'border-tan bg-white'}`}>
+                  {checked ? '✓' : ''}
+                </span>
+                {label}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CountryMultiSelect({
+  countries,
+  selected,
+  onChange,
+  totalAll,
+}: {
+  countries: Array<[string, number]>
+  selected: string[]
+  onChange: (codes: string[]) => void
+  totalAll: number
+}) {
+  const [query, setQuery] = useState('')
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [])
+
+  const selectedSet = useMemo(() => new Set(selected), [selected])
+  const q = query.trim().toLowerCase()
+
+  const suggestions = useMemo(() => {
+    return countries
+      .filter(([code]) => !selectedSet.has(code))
+      .filter(([code]) => {
+        if (!q) return true
+        const name = countryName(code).toLowerCase()
+        return name.includes(q) || code.toLowerCase().includes(q)
+      })
+      .slice(0, 8)
+  }, [countries, selectedSet, q])
+
+  const add = (code: string) => {
+    if (selectedSet.has(code)) return
+    onChange([...selected, code])
+    setQuery('')
+    setOpen(true)
+    inputRef.current?.focus()
+  }
+
+  const remove = (code: string) => {
+    onChange(selected.filter(c => c !== code))
+  }
+
+  return (
+    <div ref={rootRef} className="relative">
+      <div
+        className="relative w-full min-h-[42px] rounded-2xl border border-tan bg-cream px-3 py-2 flex flex-wrap items-center gap-1.5 focus-within:border-accent cursor-text"
+        onClick={() => { setOpen(true); inputRef.current?.focus() }}
+      >
+        {selected.length === 0 && !query && (
+          <span className="text-sm text-muted pointer-events-none absolute left-4">
+            All countries ({totalAll}) — type to filter
+          </span>
+        )}
+        {selected.map(code => (
+          <span
+            key={code}
+            className="inline-flex items-center gap-1 rounded-pill bg-white border border-tan pl-2.5 pr-1 py-0.5 text-xs font-semibold text-ink"
+          >
+            {countryName(code)}
+            <button
+              type="button"
+              aria-label={`Remove ${countryName(code)}`}
+              onClick={e => { e.stopPropagation(); remove(code) }}
+              className="h-5 w-5 rounded-full hover:bg-tan text-muted-dark hover:text-ink transition leading-none"
+            >
+              ×
+            </button>
+          </span>
+        ))}
+        <input
+          ref={inputRef}
+          value={query}
+          onChange={e => { setQuery(e.target.value); setOpen(true) }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={e => {
+            if (e.key === 'Backspace' && !query && selected.length > 0) {
+              remove(selected[selected.length - 1])
+            }
+            if (e.key === 'Enter' && suggestions[0]) {
+              e.preventDefault()
+              add(suggestions[0][0])
+            }
+            if (e.key === 'Escape') setOpen(false)
+          }}
+          className="flex-1 min-w-[7rem] bg-transparent text-sm font-semibold text-ink placeholder:text-muted focus:outline-none py-1"
+          placeholder={selected.length > 0 ? 'Add another…' : ''}
+          aria-label="Search countries"
+          autoComplete="off"
+        />
+      </div>
+
+      {open && (suggestions.length > 0 || q.length > 0) && (
+        <div className="absolute left-0 right-0 top-full mt-1.5 z-30 max-h-56 overflow-y-auto rounded-2xl border border-tan bg-white py-1.5 shadow-lg">
+          {suggestions.length === 0 ? (
+            <p className="px-4 py-2.5 text-sm text-muted-dark">No countries match “{query.trim()}”</p>
+          ) : (
+            suggestions.map(([code, count]) => (
+              <button
+                key={code}
+                type="button"
+                onClick={() => add(code)}
+                className="w-full text-left px-4 py-2.5 text-sm font-semibold text-ink hover:bg-cream transition flex items-center justify-between gap-3"
+              >
+                <span>{countryName(code)}</span>
+                <span className="text-xs font-medium text-muted-dark">{count}</span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -1161,13 +1378,13 @@ function buildEmailReport(regionLabel: string, results: AnalysisResult, filtered
     buildFullReport(regionLabel, results, filteredThemes, trend),
     '',
     '—',
-    'Sent from Timeleft Review Analyzer',
+    'Sent from Timeleft Review Analyser',
   ].join('\n')
 }
 
 // --- Decision-first framing for the Slack outputs (per-team and whole-view) ---
 // Slack messages here lead with a declarative headline ("X is the #1 issue
-// right now, up from Y") plus an explicit "Decide:" line, rather than opening
+// at the moment, up from Y") plus an explicit "Decide:" line, rather than opening
 // with metrics/metadata the reader has to interpret themselves. Deltas are
 // stated as absolute counts ("up from 54"), not percentages, since percentage
 // swings on small counts read as more dramatic than they are.
@@ -1211,7 +1428,7 @@ function buildSlackReport(regionLabel: string, results: AnalysisResult, filtered
   const topTrend = themeTrend(trend, top)
 
   const lines: string[] = []
-  lines.push(`${priorityEmoji(top.sentiment)} *${top.name}* is the #1 ${themeNoun(top.sentiment)} across ${regionLabel} right now (${mentionCount(top.count)}${trendPhrase(topTrend)}, owner: ${top.team})`)
+  lines.push(`${priorityEmoji(top.sentiment)} *${top.name}* is the #1 ${themeNoun(top.sentiment)} across ${regionLabel} at the moment (${mentionCount(top.count)}${trendPhrase(topTrend)}, owner: ${top.team})`)
   lines.push(`Decide: ${top.action || 'review and assign an owner'}`)
   if (top.quotes[0]) {
     const q = top.quotes[0]
@@ -1329,7 +1546,7 @@ function buildTeamSlack(team: Team, themes: Theme[], total: number, trend: Trend
   const topTrend = themeTrend(trend, top)
 
   const lines = [
-    `${priorityEmoji(top.sentiment)} *${top.name}* is ${team}'s #1 ${themeNoun(top.sentiment)} right now (${mentionCount(top.count)}${trendPhrase(topTrend)})`,
+    `${priorityEmoji(top.sentiment)} *${top.name}* is ${team}'s #1 ${themeNoun(top.sentiment)} at the moment (${mentionCount(top.count)}${trendPhrase(topTrend)})`,
     `Decide: ${top.action || 'review and assign an owner'}`,
   ]
   if (top.quotes[0]) {

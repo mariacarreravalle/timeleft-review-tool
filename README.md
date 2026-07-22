@@ -1,4 +1,4 @@
-# Timeleft Review Analyzer
+# Timeleft Review Analyser
 
 A web tool for non-technical teams (Ops, Product) to upload CSV of app store reviews and get instant insights: top themes by volume, sentiment per theme, severity scoring, trends vs prior window, and rating/volume charts.
 
@@ -109,7 +109,7 @@ globals.css         - Tailwind imports
 
 ## Decisions Made Thinking
 
-**Theme extraction via prompt:** Initially considered training a simple classifier on labeled examples, but decided against it because:
+**Theme extraction via prompt:** Initially considered training a simple classifier on labelled examples, but decided against it because:
 - 600 reviews is a tiny dataset
 - Themes vary wildly across domains (app pricing, UX bugs, feature requests)
 - LLM clustering is "good enough" and ships now

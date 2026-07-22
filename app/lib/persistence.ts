@@ -6,7 +6,7 @@ import type { Review } from './parseReviews'
 // storage shape for simplicity:
 //   1. "Resume where I left off" after a refresh (needs the full reviews
 //      array, since there's no file to re-read).
-//   2. "I re-uploaded a file I already analyzed" — skip the AI call and
+//   2. "I re-uploaded a file I already analysed" — skip the AI call and
 //      reuse the same taxonomy, so the same file always yields the same
 //      themes instead of a fresh (and possibly different) re-clustering.
 
@@ -20,9 +20,9 @@ export interface CachedAnalysis {
 }
 
 export interface SavedFilters {
-  country: string
+  countries: string[]
   city: string
-  timeframe: string
+  timeframe: string | string[]
   sentimentFilter: string
   teamFilter: string
   search: string
@@ -75,7 +75,24 @@ export function saveToCache(entry: CachedAnalysis): void {
 
 export function loadActive(): { csvHash: string; filters: SavedFilters } | null {
   if (typeof window === 'undefined') return null
-  return safeParse(localStorage.getItem(ACTIVE_KEY))
+  const raw = safeParse<{ csvHash: string; filters: SavedFilters & { country?: string } }>(localStorage.getItem(ACTIVE_KEY))
+  if (!raw) return null
+  // Migrate older single-country filter shape.
+  const f = raw.filters
+  const countries = Array.isArray(f.countries)
+    ? f.countries
+    : (f.country && f.country !== 'all' ? [f.country] : [])
+  return {
+    csvHash: raw.csvHash,
+    filters: {
+      countries,
+      city: f.city || 'all',
+      timeframe: f.timeframe,
+      sentimentFilter: f.sentimentFilter,
+      teamFilter: f.teamFilter,
+      search: f.search || '',
+    },
+  }
 }
 
 export function saveActive(csvHash: string, filters: SavedFilters): void {
