@@ -2313,6 +2313,23 @@ function ExportReportButton({ results, filteredThemes, trend, regionLabel }: {
 }) {
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
 
   const flash = (msg: string) => {
     setStatus(msg)
@@ -2340,28 +2357,25 @@ function ExportReportButton({ results, filteredThemes, trend, regionLabel }: {
   }
 
   return (
-    <div className="relative">
+    <div ref={rootRef} className="relative">
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
         className="btn-secondary"
+        aria-expanded={open}
+        aria-haspopup="menu"
       >
         {status || (open ? 'Export ▲' : 'Export ▼')}
       </button>
       {open && (
-        <>
-          <button
-            type="button"
-            aria-label="Close export menu"
-            className="fixed inset-0 z-10 cursor-default"
-            onClick={() => setOpen(false)}
-          />
-          <div className="absolute right-0 top-full mt-2 z-20 w-60 rounded-2xl border border-tan bg-white py-1.5 shadow-lg">
-            <ExportMenuItem label="Export as PDF" onClick={exportPdf} />
-            <ExportMenuItem label="Export as Slack message" onClick={copySlack} />
-            <ExportMenuItem label="Export as email message" onClick={copyEmail} />
-          </div>
-        </>
+        <div
+          role="menu"
+          className="absolute right-0 top-full mt-2 z-20 w-60 rounded-2xl border border-tan bg-white py-1.5 shadow-lg"
+        >
+          <ExportMenuItem label="Export as PDF" onClick={exportPdf} />
+          <ExportMenuItem label="Export as Slack message" onClick={copySlack} />
+          <ExportMenuItem label="Export as email message" onClick={copyEmail} />
+        </div>
       )}
     </div>
   )

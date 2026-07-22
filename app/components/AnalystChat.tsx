@@ -123,16 +123,22 @@ export default function AnalystChat({ context }: { context: AnalystChatContext }
         </div>
       )}
 
-      <div className="rounded-2xl border border-tan bg-cream/40 min-h-[12rem] max-h-[28rem] overflow-y-auto p-4 sm:p-5 mb-4 space-y-4">
+      <div
+        className="rounded-2xl border border-tan bg-cream/40 min-h-[12rem] max-h-[28rem] overflow-y-auto p-4 sm:p-5 mb-4 space-y-4 cursor-text"
+        onClick={() => {
+          if (!loading) inputRef.current?.focus()
+        }}
+      >
         {messages.length === 0 && !loading ? (
           <p className="text-sm text-muted-dark leading-relaxed">
-            Try an example above, or type your own question — for example about a country, theme, or team.
+            Try an example above, or type your question in the box below — for example about a country, theme, or team.
           </p>
         ) : (
           messages.map((m, i) => (
             <div
               key={`${m.role}-${i}`}
               className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}
+              onClick={e => e.stopPropagation()}
             >
               {m.role === 'user' ? (
                 <div className="max-w-[90%] sm:max-w-[75%] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap bg-ink text-cream">
@@ -147,7 +153,7 @@ export default function AnalystChat({ context }: { context: AnalystChatContext }
           ))
         )}
         {loading && (
-          <div className="flex justify-start">
+          <div className="flex justify-start" onClick={e => e.stopPropagation()}>
             <div className="bg-white border border-tan rounded-2xl px-3.5 py-2.5 text-sm text-muted-dark inline-flex items-center gap-2">
               <span className="h-3.5 w-3.5 rounded-full border-2 border-accent border-t-transparent animate-spin" />
               Thinking…
@@ -161,14 +167,23 @@ export default function AnalystChat({ context }: { context: AnalystChatContext }
         <p className="text-sm font-medium text-red-600 mb-3" role="alert">{error}</p>
       )}
 
-      <form onSubmit={onSubmit} className="flex gap-2.5 items-center">
+      <form
+        onSubmit={onSubmit}
+        className="relative z-20 flex gap-2.5 items-center"
+        onClick={e => e.stopPropagation()}
+      >
         <input
           ref={inputRef}
+          type="text"
+          name="analyst-question"
           value={input}
           onChange={e => setInput(e.target.value)}
           placeholder="Ask about this slice of reviews…"
           disabled={loading}
-          className="flex-1 min-w-0 h-9 rounded-pill border border-tan bg-cream px-5 text-sm text-ink placeholder:text-muted focus:outline-none focus:border-accent disabled:opacity-60"
+          autoComplete="off"
+          autoCorrect="off"
+          spellCheck
+          className="flex-1 min-w-0 h-10 rounded-pill border border-tan bg-white px-5 text-sm text-ink placeholder:text-muted focus:outline-none focus:border-accent disabled:opacity-60 disabled:cursor-not-allowed"
           aria-label="Ask the analyst"
         />
         <button
