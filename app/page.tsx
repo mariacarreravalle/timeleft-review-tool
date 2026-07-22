@@ -9,6 +9,7 @@ import {
   loadResolved, saveResolved, loadResolverProfile, saveResolverProfile,
   type CachedAnalysis, type SavedFilters, type ResolvedMark
 } from './lib/persistence'
+import AnalystChat from './components/AnalystChat'
 
 type Team = 'Product' | 'Tech' | 'CX & Support' | 'Ops' | 'Marketing' | 'Other'
 
@@ -22,7 +23,13 @@ interface Theme {
   impact: number
   team: Team
   action: string
-  quotes: string[]
+  quotes: QuoteSnippet[]
+}
+
+interface QuoteSnippet {
+  text: string
+  rating: number
+  date: string
 }
 
 // Returned by the API: theme + the review indices that express it (multi-label).
@@ -172,9 +179,15 @@ function computeDateRange(reviews: Review[]): { earliest: string; latest: string
 // longest text. The longest review is often a rambling multi-topic wall of
 // text; something near ~120 chars usually reads as one crisp, complete point.
 const QUOTE_TARGET_LENGTH = 120
-function pickQuotes(texts: string[], max = 3): string[] {
-  const ranked = [...texts].sort((a, b) => Math.abs(a.length - QUOTE_TARGET_LENGTH) - Math.abs(b.length - QUOTE_TARGET_LENGTH))
-  return ranked.slice(0, max).map(q => (q.length > 220 ? q.slice(0, 220).trimEnd() + '…' : q))
+function pickQuotes(reviews: Array<{ text: string; rating: number; date: string }>, max = 3): QuoteSnippet[] {
+  const ranked = [...reviews]
+    .filter(r => r.text.trim())
+    .sort((a, b) => Math.abs(a.text.length - QUOTE_TARGET_LENGTH) - Math.abs(b.text.length - QUOTE_TARGET_LENGTH))
+  return ranked.slice(0, max).map(r => ({
+    text: r.text.length > 220 ? r.text.slice(0, 220).trimEnd() + '…' : r.text,
+    rating: r.rating > 0 ? r.rating : 0,
+    date: r.date,
+  }))
 }
 
 // Volume-led urgency, amplified by negativity + hard-signal keywords.
@@ -242,7 +255,7 @@ function computeView(reviews: Review[], taxonomy: ThemeTaxonomy[], selectedCount
       const avg = ratings.length ? ratings.reduce((a, b) => a + b, 0) / ratings.length : 0
       const sentiment = ratings.length ? clamp((avg - 3) / 2, -1, 1) : 0
       const texts = members.map(i => reviews[i].text)
-      const quotes = pickQuotes(texts)
+      const quotes = pickQuotes(members.map(i => reviews[i]))
       return {
         name: t.name,
         team: t.team,
@@ -343,7 +356,7 @@ export default function Home() {
   const [activeHash, setActiveHash] = useState<string | null>(null)
   const [resumeCandidate, setResumeCandidate] = useState<{ entry: CachedAnalysis; filters: SavedFilters } | null>(null)
   const [resolvedThemes, setResolvedThemes] = useState<ResolvedMark[]>([])
-  const [resolvedOpen, setResolvedOpen] = useState(false)
+  const [resolvedOpen, setResolvedOpen] = useState(true) // show stamped themes by default
   const [resolvePrompt, setResolvePrompt] = useState<string | null>(null)
 
   // On mount, check for a resumable session from a previous visit (survives
@@ -369,8 +382,9 @@ export default function Home() {
   }, [activeHash, resolvedThemes])
 
   const hydrateResolved = (csvHash: string) => {
-    setResolvedThemes(loadResolved(csvHash))
-    setResolvedOpen(false)
+    const marks = loadResolved(csvHash)
+    setResolvedThemes(marks)
+    setResolvedOpen(true)
   }
 
   const requestResolve = (themeName: string) => {
@@ -381,10 +395,9 @@ export default function Home() {
     setResolvePrompt(themeName)
   }
 
-  const confirmResolve = (byName: string, byTeam: string) => {
-    if (!resolvePrompt) return
+  const confirmResolve = (themeName: string, byName: string, byTeam: string) => {
     const mark: ResolvedMark = {
-      themeName: resolvePrompt,
+      themeName,
       byName: byName.trim(),
       byTeam: byTeam.trim(),
       fixedAt: new Date().toISOString(),
@@ -553,12 +566,30 @@ export default function Home() {
       if (sentimentFilter.length > 0 && !sentimentFilter.includes(sentimentBucket(t.sentiment))) return false
       if (teamFilter.length > 0 && !teamFilter.includes(t.team)) return false
       if (q) {
-        const hay = (t.name + ' ' + t.action + ' ' + t.team + ' ' + t.quotes.join(' ')).toLowerCase()
+        const hay = (t.name + ' ' + t.action + ' ' + t.team + ' ' + t.quotes.map(q => q.text).join(' ')).toLowerCase()
         if (!hay.includes(q)) return false
       }
       return true
     })
   }, [view, search, sentimentFilter, teamFilter])
+
+  const filteredReviews = useMemo(() => {
+    return reviews.filter(r =>
+      matchesCountries(r.country, selectedCountries) &&
+      inTimeframe(r.date, selectedMonths)
+    )
+  }, [reviews, selectedCountries, selectedMonths])
+
+  const chatFilterLabel = useMemo(() => {
+    const parts = [
+      countriesLabel(selectedCountries),
+      monthsLabel(selectedMonths),
+    ]
+    if (sentimentFilter.length > 0) parts.push(`sentiment: ${sentimentFilter.join(', ')}`)
+    if (teamFilter.length > 0) parts.push(`team: ${teamFilter.join(', ')}`)
+    if (search.trim()) parts.push(`search: “${search.trim()}”`)
+    return parts.join(' · ')
+  }, [selectedCountries, selectedMonths, sentimentFilter, teamFilter, search])
 
   const onCountriesChange = (next: string[]) => { setSelectedCountries(next); setExpanded(null) }
 
@@ -642,6 +673,8 @@ export default function Home() {
           <Dashboard
             results={view}
             filteredThemes={filteredThemes}
+            filteredReviews={filteredReviews}
+            chatFilterLabel={chatFilterLabel}
             trend={trend}
             search={search}
             setSearch={setSearch}
@@ -667,7 +700,7 @@ export default function Home() {
         <ResolvePromptModal
           themeName={resolvePrompt}
           onCancel={() => setResolvePrompt(null)}
-          onConfirm={confirmResolve}
+          onConfirm={(name, team) => confirmResolve(resolvePrompt, name, team)}
         />
       )}
     </main>
@@ -1067,6 +1100,8 @@ function CountryMultiSelect({
 function Dashboard(props: {
   results: AnalysisResult
   filteredThemes: Theme[]
+  filteredReviews: Review[]
+  chatFilterLabel: string
   trend: TrendData | null
   search: string
   setSearch: (s: string) => void
@@ -1086,7 +1121,7 @@ function Dashboard(props: {
   setResolvedOpen: (o: boolean) => void
 }) {
   const {
-    results, filteredThemes, trend, search, setSearch, sentimentFilter, setSentimentFilter,
+    results, filteredThemes, filteredReviews, chatFilterLabel, trend, search, setSearch, sentimentFilter, setSentimentFilter,
     teamFilter, setTeamFilter, expanded, setExpanded, activeSlackTeam, setActiveSlackTeam, copied, setCopied,
     resolvedThemes, onResolveToggle, resolvedOpen, setResolvedOpen,
   } = props
@@ -1098,13 +1133,16 @@ function Dashboard(props: {
   }, [resolvedThemes])
   const openThemes = filteredThemes.filter(t => !resolvedByName.has(t.name))
   const doneThemes = filteredThemes.filter(t => resolvedByName.has(t.name))
+  // When showing resolved, keep original rank order so the stamp appears in place.
+  const visibleThemes = resolvedOpen ? filteredThemes : openThemes
 
   const total = results.totalReviews
   const topUrgent = results.themes.find(t => !resolvedByName.has(t.name)) || null
   const rated = results.sentiment.negative + results.sentiment.neutral + results.sentiment.positive
   const volumeDelta = trend && trend.priorTotal > 0 ? total - trend.priorTotal : null
 
-  const renderTheme = (theme: Theme, resolved: boolean) => {
+  const renderTheme = (theme: Theme) => {
+    const resolved = resolvedByName.has(theme.name)
     const rank = results.themes.indexOf(theme) + 1
     const isOpen = expanded === rank
     const priorCount = trend && trend.priorTotal > 0 ? trend.priorCounts.get(theme.name) ?? 0 : null
@@ -1218,33 +1256,30 @@ function Dashboard(props: {
           </div>
         </div>
 
-        {openThemes.length === 0 && doneThemes.length === 0 ? (
+        {filteredThemes.length === 0 ? (
           <p className="text-sm text-muted-dark py-8 text-center">No themes match these filters.</p>
         ) : (
           <div className="space-y-3.5">
-            {openThemes.length === 0 ? (
+            {visibleThemes.length === 0 ? (
               <p className="text-sm text-muted-dark py-5 text-center border border-dashed border-tan rounded-2xl">
-                All matching themes are marked as solved.
+                All matching themes are marked as solved. Show resolved below to see their stamps.
               </p>
             ) : (
-              openThemes.map(theme => renderTheme(theme, false))
+              visibleThemes.map(theme => renderTheme(theme))
             )}
 
             {doneThemes.length > 0 && (
-              <div className="pt-4">
+              <div className="pt-2">
                 <button
                   type="button"
                   onClick={() => setResolvedOpen(!resolvedOpen)}
                   className="w-full flex items-center justify-between rounded-2xl border border-tan bg-cream/70 px-4 h-10 text-sm font-semibold text-muted-dark hover:text-ink transition"
                 >
-                  <span>Resolved ({doneThemes.length})</span>
-                  <span className="text-xs">{resolvedOpen ? 'Hide ▲' : 'Show ▼'}</span>
+                  <span>
+                    {resolvedOpen ? 'Hide resolved' : 'Show resolved'} ({doneThemes.length})
+                  </span>
+                  <span className="text-xs">{resolvedOpen ? '▲' : '▼'}</span>
                 </button>
-                {resolvedOpen && (
-                  <div className="space-y-3.5 mt-3.5">
-                    {doneThemes.map(theme => renderTheme(theme, true))}
-                  </div>
-                )}
               </div>
             )}
           </div>
@@ -1288,6 +1323,32 @@ function Dashboard(props: {
         setActiveSlackTeam={setActiveSlackTeam}
         copied={copied}
         setCopied={setCopied}
+      />
+
+      {/* D. AI analyst chat — answers against the current filtered slice */}
+      <AnalystChat
+        context={{
+          filterLabel: chatFilterLabel,
+          totalReviews: results.totalReviews,
+          sentiment: results.sentiment,
+          dateRange: results.dateRange,
+          themes: filteredThemes.map(t => ({
+            name: t.name,
+            count: t.count,
+            percentage: t.percentage,
+            impact: t.impact,
+            team: t.team,
+            action: t.action,
+            sentiment: t.sentiment,
+            quotes: t.quotes.map(q => q.text),
+          })),
+          reviews: filteredReviews.slice(0, 80).map(r => ({
+            rating: r.rating,
+            date: r.date,
+            country: r.country,
+            text: r.text,
+          })),
+        }}
       />
     </div>
   )
@@ -1669,7 +1730,7 @@ function ThemeRow({ theme, rank, total, isOpen, onToggle, trendDelta, resolved, 
   onToggleResolved: () => void
 }) {
   return (
-    <div className={`rounded-2xl border overflow-hidden transition ${resolved ? 'border-tan/70 bg-cream/50 opacity-80' : 'border-tan bg-white'}`}>
+    <div className={`rounded-2xl border overflow-hidden transition ${resolved ? 'border-info/30 bg-cream/60' : 'border-tan bg-white'}`}>
       <div className="flex items-stretch gap-1">
         <button
           type="button"
@@ -1689,9 +1750,11 @@ function ThemeRow({ theme, rank, total, isOpen, onToggle, trendDelta, resolved, 
               )}
             </div>
             {resolved && resolvedMark && (
-              <p className="mt-2 inline-flex items-center gap-1.5 text-[11px] font-semibold text-info bg-white border border-tan rounded-pill px-2.5 h-6 whitespace-nowrap">
-                <span aria-hidden>✓</span>
-                <span>by {resolvedMark.byName} in {resolvedMark.byTeam}, {formatFixedDate(resolvedMark.fixedAt)}</span>
+              <p className="mt-2 inline-flex items-center gap-1.5 max-w-full text-xs font-semibold text-info bg-white border border-info/30 rounded-pill pl-2.5 pr-3 py-1 leading-snug">
+                <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-info text-white text-[10px]" aria-hidden>✓</span>
+                <span className="min-w-0">
+                  by {resolvedMark.byName} in {resolvedMark.byTeam}, {formatFixedDate(resolvedMark.fixedAt)}
+                </span>
               </p>
             )}
             <p className="text-sm text-muted-dark mt-1.5 leading-relaxed">
@@ -1730,18 +1793,59 @@ function ThemeRow({ theme, rank, total, isOpen, onToggle, trendDelta, resolved, 
       </div>
 
       {isOpen && (
-        <div className="px-5 pb-5 pt-2 bg-cream/80 border-t border-tan">
+        <div className="px-5 pb-5 pt-3 bg-cream/80 border-t border-tan">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted-dark mb-3">Top quotes backing this theme</p>
-          <div className="space-y-2.5">
-            {theme.quotes.length > 0 ? theme.quotes.slice(0, 3).map((q, i) => (
-              <blockquote key={i} className="text-sm text-ink italic border-l-2 border-accent pl-3.5 leading-relaxed">
-                “{q}”
-              </blockquote>
-            )) : <p className="text-sm text-muted-dark">No quotes returned for this theme.</p>}
-          </div>
+          {theme.quotes.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {theme.quotes.slice(0, 3).map((q, i) => (
+                <AppStoreReviewCard key={i} quote={q} />
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-dark">No quotes returned for this theme.</p>
+          )}
         </div>
       )}
     </div>
+  )
+}
+
+function AppStoreReviewCard({ quote }: { quote: QuoteSnippet }) {
+  const stars = Math.max(0, Math.min(5, Math.round(quote.rating)))
+  const parsed = quote.date ? Date.parse(quote.date) : NaN
+  const dateLabel = !isNaN(parsed) ? formatDate(parsed) : null
+
+  return (
+    <article className="bg-white rounded-2xl border border-tan/80 shadow-[0_1px_2px_rgba(17,17,17,0.04)] p-4 flex flex-col gap-2.5 min-h-[9.5rem]">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-0.5" aria-label={stars > 0 ? `${stars} out of 5 stars` : 'No rating'}>
+          {[1, 2, 3, 4, 5].map(n => (
+            <StarIcon key={n} filled={n <= stars} />
+          ))}
+        </div>
+        {dateLabel && (
+          <time className="text-[11px] text-muted whitespace-nowrap">{dateLabel}</time>
+        )}
+      </div>
+      <p className="text-sm text-ink leading-relaxed flex-1">
+        {quote.text}
+      </p>
+    </article>
+  )
+}
+
+function StarIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      aria-hidden
+      className={filled ? 'text-accent' : 'text-tan'}
+      fill="currentColor"
+    >
+      <path d="M12 2.5l2.9 5.88 6.5.95-4.7 4.58 1.11 6.47L12 17.77l-5.81 3.06 1.11-6.47-4.7-4.58 6.5-.95L12 2.5z" />
+    </svg>
   )
 }
 
@@ -1838,7 +1942,7 @@ function ResolvePromptModal({
             type="submit"
             className="btn-primary flex-1"
           >
-            Confirm solved
+            Confirm
           </button>
         </div>
       </form>
@@ -2072,7 +2176,7 @@ function buildFullReport(regionLabel: string, results: AnalysisResult, filteredT
     }
     if (t.count <= THEME_LOW_CONFIDENCE_MAX) lines.push(`   ⚠ Based on very few reviews (${t.count}) — treat as directional.`)
     if (t.action) lines.push(`   Action: ${t.action}`)
-    if (t.quotes[0]) lines.push(`   Quote: "${t.quotes[0]}"`)
+    if (t.quotes[0]) lines.push(`   Quote: "${t.quotes[0].text}"`)
     lines.push('')
   })
 
@@ -2139,7 +2243,7 @@ function buildSlackReport(regionLabel: string, results: AnalysisResult, filtered
   lines.push(`${priorityEmoji(top.sentiment)} *${top.name}* is the #1 ${themeNoun(top.sentiment)} across ${regionLabel} at the moment (${mentionCount(top.count)}${trendPhrase(topTrend)}, owner: ${top.team})`)
   lines.push(`Decide: ${top.action || 'review and assign an owner'}`)
   if (top.quotes[0]) {
-    const q = top.quotes[0]
+    const q = top.quotes[0].text
     lines.push(`💬 "${q.length > 140 ? q.slice(0, 140) + '…' : q}"`)
   }
 
@@ -2238,7 +2342,7 @@ function downloadReportPdf(regionLabel: string, results: AnalysisResult, filtere
       write(`Based on very few reviews (${t.count}) — treat as directional.`, { size: 9, color: [163, 91, 0], gap: 1.5 })
     }
     if (t.action) write(`Action: ${t.action}`, { size: 10, gap: 1.5 })
-    if (t.quotes[0]) write(`"${t.quotes[0]}"`, { size: 9, style: 'italic', color: [51, 51, 51], gap: 3 })
+    if (t.quotes[0]) write(`"${t.quotes[0].text}"`, { size: 9, style: 'italic', color: [51, 51, 51], gap: 3 })
     else y += 2
   })
 
@@ -2258,7 +2362,7 @@ function buildTeamSlack(team: Team, themes: Theme[], total: number, trend: Trend
     `Decide: ${top.action || 'review and assign an owner'}`,
   ]
   if (top.quotes[0]) {
-    const q = top.quotes[0]
+    const q = top.quotes[0].text
     lines.push(`💬 "${q.length > 140 ? q.slice(0, 140) + '…' : q}"`)
   }
 
