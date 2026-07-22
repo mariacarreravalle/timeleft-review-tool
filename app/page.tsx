@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import { jsPDF } from 'jspdf'
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { parseReviewsCsv, type Review } from './lib/parseReviews'
 import {
@@ -40,10 +41,40 @@ interface AnalysisResult {
 
 type SentimentFilter = 'all' | 'negative' | 'neutral' | 'positive'
 type TeamFilter = 'all' | Team
-type Timeframe = 'all' | 'year' | 'quarter' | 'month'
+type Timeframe = 'all' | '2025-09' | '2025-10' | '2025-11'
 
-const TIMEFRAME_DAYS: Record<Exclude<Timeframe, 'all'>, number> = { year: 365, quarter: 90, month: 30 }
-const TIMEFRAME_LABEL: Record<Timeframe, string> = { all: 'all time', year: 'last year', quarter: 'last quarter', month: 'last month' }
+const TIMEFRAME_LABEL: Record<Timeframe, string> = {
+  all: 'All',
+  '2025-09': 'Sep 25',
+  '2025-10': 'Oct 25',
+  '2025-11': 'Nov 25',
+}
+
+/** Prior calendar month for trend deltas (only months present in this export). */
+const PRIOR_TIMEFRAME: Partial<Record<Timeframe, Timeframe>> = {
+  '2025-10': '2025-09',
+  '2025-11': '2025-10',
+}
+
+function normalizeTimeframe(t: string): Timeframe {
+  if (t === 'all' || t === '2025-09' || t === '2025-10' || t === '2025-11') return t
+  return 'all'
+}
+
+/** YYYY-MM from a review date string (prefers the literal prefix to avoid TZ shifts). */
+function monthKey(dateStr: string): string | null {
+  const m = /^(\d{4})-(\d{2})/.exec(dateStr.trim())
+  if (m) return `${m[1]}-${m[2]}`
+  const t = Date.parse(dateStr)
+  if (isNaN(t)) return null
+  const d = new Date(t)
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
+}
+
+function inTimeframe(dateStr: string, timeframe: Timeframe): boolean {
+  if (timeframe === 'all') return true
+  return monthKey(dateStr) === timeframe
+}
 
 const TEAMS: Team[] = ['Product', 'Tech', 'CX & Support', 'Ops', 'Marketing', 'Other']
 
@@ -138,19 +169,10 @@ function volumeChart(reviews: Review[]) {
 // Themes keep the AI taxonomy but every number (count, %, sentiment, impact,
 // quotes) is recomputed from the reviews that fall in the current region.
 function computeView(reviews: Review[], taxonomy: ThemeTaxonomy[], country: string, city: string, timeframe: Timeframe): AnalysisResult {
-  // Timeframe windows anchor to the newest review date in the data (not the wall
-  // clock) so "last month" means the last month of available reviews — exports
-  // are usually historical.
-  let cutoff: number | null = null
-  if (timeframe !== 'all') {
-    const times = reviews.map(r => Date.parse(r.date)).filter(t => !isNaN(t))
-    if (times.length) cutoff = Math.max(...times) - TIMEFRAME_DAYS[timeframe] * 86400000
-  }
-
   const inRegion = (r: Review) =>
     (country === 'all' || r.country === country) &&
     (city === 'all' || r.city === city) &&
-    (cutoff === null || Date.parse(r.date) >= cutoff)
+    inTimeframe(r.date, timeframe)
 
   const regionIdx = new Set<number>()
   reviews.forEach((r, i) => { if (inRegion(r)) regionIdx.add(i) })
@@ -195,27 +217,17 @@ interface TrendData {
   priorCounts: Map<string, number> // theme name -> count in the prior equivalent window
 }
 
-// Compares the current timeframe window against the immediately preceding
-// window of equal length (same region), so a spike is visible without leaving
-// the dashboard. There's no natural "prior period" for the 'all' timeframe, so
-// trend is only available once a specific window is selected.
+// Compares the selected calendar month against the previous month in the
+// export (Oct→Sep, Nov→Oct). Sep and "all" have no prior window.
 function computeTrend(reviews: Review[], taxonomy: ThemeTaxonomy[], country: string, city: string, timeframe: Timeframe): TrendData | null {
-  if (timeframe === 'all') return null
-  const windowMs = TIMEFRAME_DAYS[timeframe] * 86400000
-  const times = reviews.map(r => Date.parse(r.date)).filter(t => !isNaN(t))
-  if (!times.length) return null
-
-  const latest = Math.max(...times)
-  const currentCutoff = latest - windowMs
-  const priorStart = latest - 2 * windowMs
+  const prior = PRIOR_TIMEFRAME[timeframe]
+  if (!prior) return null
 
   const inRegion = (r: Review) => (country === 'all' || r.country === country) && (city === 'all' || r.city === city)
 
   const priorIdx = new Set<number>()
   reviews.forEach((r, i) => {
-    if (!inRegion(r)) return
-    const t = Date.parse(r.date)
-    if (isNaN(t) || t < priorStart || t >= currentCutoff) return
+    if (!inRegion(r) || !inTimeframe(r.date, prior)) return
     priorIdx.add(i)
   })
 
@@ -383,7 +395,7 @@ export default function Home() {
     setReviews(entry.reviews)
     setTaxonomy(entry.taxonomy as ThemeTaxonomy[])
     setCountry(filters.country)
-    setTimeframe(filters.timeframe as Timeframe)
+    setTimeframe(normalizeTimeframe(filters.timeframe))
     setSentimentFilter(filters.sentimentFilter as SentimentFilter)
     setTeamFilter(filters.teamFilter as TeamFilter)
     setSearch(filters.search)
@@ -505,7 +517,7 @@ export default function Home() {
                 results={view}
                 filteredThemes={filteredThemes}
                 trend={trend}
-                regionLabel={`${country === 'all' ? 'All countries' : countryName(country)}${timeframe !== 'all' ? ` · ${TIMEFRAME_LABEL[timeframe]}` : ''}`}
+                regionLabel={`${country === 'all' ? 'All countries' : countryName(country)} · ${TIMEFRAME_LABEL[timeframe]}`}
               />
               <button onClick={resetAll} className="rounded-pill bg-ink text-cream font-semibold text-sm px-5 py-2.5 hover:bg-black transition">
                 ← New upload
@@ -629,7 +641,7 @@ function RegionFilter(props: {
             label=""
             value={timeframe}
             onChange={v => setTimeframe(v as Timeframe)}
-            options={[['all', 'All'], ['year', 'Last year'], ['quarter', 'Last quarter'], ['month', 'Last month']]}
+            options={[['all', 'All'], ['2025-09', 'Sep 25'], ['2025-10', 'Oct 25'], ['2025-11', 'Nov 25']]}
           />
         </div>
 
@@ -639,7 +651,7 @@ function RegionFilter(props: {
             {totalRegion.toLocaleString()}<span className="text-sm font-medium text-muted-dark"> / {totalAll.toLocaleString()}</span>
           </p>
           <p className="text-[11px] text-muted-dark">
-            {country === 'all' ? 'all markets' : countryName(country)}{timeframe !== 'all' ? ` · ${TIMEFRAME_LABEL[timeframe]}` : ''}
+            {country === 'all' ? 'all markets' : countryName(country)} · {TIMEFRAME_LABEL[timeframe]}
           </p>
         </div>
       </div>
@@ -825,6 +837,7 @@ function Dashboard(props: {
       <TeamActions
         themes={results.themes}
         total={total}
+        trend={trend}
         activeSlackTeam={activeSlackTeam}
         setActiveSlackTeam={setActiveSlackTeam}
         copied={copied}
@@ -961,9 +974,10 @@ function TeamBadge({ team }: { team: Team }) {
   )
 }
 
-function TeamActions({ themes, total, activeSlackTeam, setActiveSlackTeam, copied, setCopied }: {
+function TeamActions({ themes, total, trend, activeSlackTeam, setActiveSlackTeam, copied, setCopied }: {
   themes: Theme[]
   total: number
+  trend: TrendData | null
   activeSlackTeam: Team | null
   setActiveSlackTeam: (t: Team | null) => void
   copied: boolean
@@ -1006,10 +1020,10 @@ function TeamActions({ themes, total, activeSlackTeam, setActiveSlackTeam, copie
             {activeSlackTeam === team && (
               <div className="mt-3">
                 <div className="bg-ink rounded-2xl p-4 font-mono text-xs text-cream whitespace-pre-wrap max-h-56 overflow-y-auto">
-                  {buildTeamSlack(team, items, total)}
+                  {buildTeamSlack(team, items, total, trend)}
                 </div>
                 <button
-                  onClick={() => { navigator.clipboard.writeText(buildTeamSlack(team, items, total)); setCopied(true); setTimeout(() => setCopied(false), 2000) }}
+                  onClick={() => { navigator.clipboard.writeText(buildTeamSlack(team, items, total, trend)); setCopied(true); setTimeout(() => setCopied(false), 2000) }}
                   className="mt-2 rounded-pill bg-ink text-cream font-semibold py-1.5 px-4 text-xs hover:bg-black transition"
                 >
                   {copied ? 'Copied ✓' : 'Copy to clipboard'}
@@ -1023,7 +1037,7 @@ function TeamActions({ themes, total, activeSlackTeam, setActiveSlackTeam, copie
   )
 }
 
-/* ---------- Export full report (respects all active filters) ---------- */
+/* ---------- Export report (PDF / Slack / email) ---------- */
 
 function ExportReportButton({ results, filteredThemes, trend, regionLabel }: {
   results: AnalysisResult
@@ -1031,24 +1045,80 @@ function ExportReportButton({ results, filteredThemes, trend, regionLabel }: {
   trend: TrendData | null
   regionLabel: string
 }) {
-  const [copied, setCopied] = useState(false)
+  const [open, setOpen] = useState(false)
+  const [status, setStatus] = useState<string | null>(null)
+
+  const flash = (msg: string) => {
+    setStatus(msg)
+    setOpen(false)
+    setTimeout(() => setStatus(null), 2000)
+  }
+
+  const exportPdf = () => {
+    try {
+      downloadReportPdf(regionLabel, results, filteredThemes, trend)
+      flash('PDF downloaded ✓')
+    } catch {
+      flash('PDF export failed')
+    }
+  }
+
+  const copySlack = async () => {
+    await navigator.clipboard.writeText(buildSlackReport(regionLabel, results, filteredThemes, trend))
+    flash('Slack message copied ✓')
+  }
+
+  const copyEmail = async () => {
+    await navigator.clipboard.writeText(buildEmailReport(regionLabel, results, filteredThemes, trend))
+    flash('Email message copied ✓')
+  }
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="rounded-pill bg-white border border-tan text-ink font-semibold text-sm px-5 py-2.5 hover:border-accent transition"
+      >
+        {status || (open ? 'Export ▲' : 'Export ▼')}
+      </button>
+      {open && (
+        <>
+          <button
+            type="button"
+            aria-label="Close export menu"
+            className="fixed inset-0 z-10 cursor-default"
+            onClick={() => setOpen(false)}
+          />
+          <div className="absolute right-0 top-full mt-2 z-20 w-60 rounded-2xl border border-tan bg-white py-1.5 shadow-lg">
+            <ExportMenuItem label="Export as PDF" onClick={exportPdf} />
+            <ExportMenuItem label="Export as Slack message" onClick={copySlack} />
+            <ExportMenuItem label="Export as email message" onClick={copyEmail} />
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function ExportMenuItem({ label, onClick }: { label: string; onClick: () => void }) {
   return (
     <button
-      onClick={() => {
-        navigator.clipboard.writeText(buildFullReport(regionLabel, results, filteredThemes, trend))
-        setCopied(true)
-        setTimeout(() => setCopied(false), 2000)
-      }}
-      className="rounded-pill bg-white border border-tan text-ink font-semibold text-sm px-5 py-2.5 hover:border-accent transition"
+      type="button"
+      onClick={onClick}
+      className="w-full text-left px-4 py-2.5 text-sm font-semibold text-ink hover:bg-cream transition"
     >
-      {copied ? 'Copied ✓' : 'Copy full report'}
+      {label}
     </button>
   )
 }
 
-function buildFullReport(regionLabel: string, results: AnalysisResult, filteredThemes: Theme[], trend: TrendData | null): string {
+function reportPct(results: AnalysisResult) {
   const rated = results.sentiment.negative + results.sentiment.neutral + results.sentiment.positive
-  const pct = (n: number) => (rated > 0 ? Math.round((n / rated) * 100) : 0)
+  return (n: number) => (rated > 0 ? Math.round((n / rated) * 100) : 0)
+}
+
+function buildFullReport(regionLabel: string, results: AnalysisResult, filteredThemes: Theme[], trend: TrendData | null): string {
+  const pct = reportPct(results)
 
   const lines: string[] = []
   lines.push(`Timeleft Review Analysis — ${regionLabel}`)
@@ -1084,17 +1154,197 @@ function buildFullReport(regionLabel: string, results: AnalysisResult, filteredT
   return lines.join('\n')
 }
 
-function buildTeamSlack(team: Team, themes: Theme[], total: number): string {
-  const lines = [`*📋 Timeleft review digest — ${team}*`, `_${total} reviews analysed_`, '']
-  themes.forEach((t, i) => {
-    lines.push(`${i + 1}. *${t.name}* — ${t.percentage}% of reviews (${t.count}/${total})`)
-    if (t.action) lines.push(`   →  ${t.action}`)
-    if (t.quotes[0]) {
-      const q = t.quotes[0]
-      lines.push(`   💬 "${q.length > 120 ? q.slice(0, 120) + '…' : q}"`)
+function buildEmailReport(regionLabel: string, results: AnalysisResult, filteredThemes: Theme[], trend: TrendData | null): string {
+  return [
+    `Subject: Timeleft review analysis — ${regionLabel}`,
+    '',
+    buildFullReport(regionLabel, results, filteredThemes, trend),
+    '',
+    '—',
+    'Sent from Timeleft Review Analyzer',
+  ].join('\n')
+}
+
+// --- Decision-first framing for the Slack outputs (per-team and whole-view) ---
+// Slack messages here lead with a declarative headline ("X is the #1 issue
+// right now, up from Y") plus an explicit "Decide:" line, rather than opening
+// with metrics/metadata the reader has to interpret themselves. Deltas are
+// stated as absolute counts ("up from 54"), not percentages, since percentage
+// swings on small counts read as more dramatic than they are.
+
+function themeNoun(sentiment: number): string {
+  if (sentiment < -0.15) return 'complaint'
+  if (sentiment > 0.15) return 'highlight'
+  return 'theme'
+}
+
+function priorityEmoji(sentiment: number): string {
+  if (sentiment < -0.15) return '🔴'
+  if (sentiment > 0.15) return '🟢'
+  return '🟡'
+}
+
+function themeTrend(trend: TrendData | null, theme: Theme): { delta: number; priorCount: number } | null {
+  if (!trend || trend.priorTotal === 0) return null
+  const priorCount = trend.priorCounts.get(theme.name) ?? 0
+  return { delta: theme.count - priorCount, priorCount }
+}
+
+function trendPhrase(t: { delta: number; priorCount: number } | null): string {
+  if (!t) return ''
+  if (t.delta > 0) return `, up from ${t.priorCount} last period`
+  if (t.delta < 0) return `, down from ${t.priorCount} last period`
+  return ', steady vs last period'
+}
+
+function mentionCount(count: number): string {
+  return `${count} mention${count === 1 ? '' : 's'}`
+}
+
+function buildSlackReport(regionLabel: string, results: AnalysisResult, filteredThemes: Theme[], trend: TrendData | null): string {
+  if (filteredThemes.length === 0) {
+    return `*Timeleft Review Analysis — ${regionLabel}*\nNo themes match the current filters.`
+  }
+
+  const pct = reportPct(results)
+  const [top, ...rest] = filteredThemes
+  const topTrend = themeTrend(trend, top)
+
+  const lines: string[] = []
+  lines.push(`${priorityEmoji(top.sentiment)} *${top.name}* is the #1 ${themeNoun(top.sentiment)} across ${regionLabel} right now (${mentionCount(top.count)}${trendPhrase(topTrend)}, owner: ${top.team})`)
+  lines.push(`Decide: ${top.action || 'review and assign an owner'}`)
+  if (top.quotes[0]) {
+    const q = top.quotes[0]
+    lines.push(`💬 "${q.length > 140 ? q.slice(0, 140) + '…' : q}"`)
+  }
+
+  if (rest.length > 0) {
+    lines.push('', 'Also flagged:')
+    rest.forEach((t, i) => {
+      const tTrend = themeTrend(trend, t)
+      lines.push(`${i + 2}. ${priorityEmoji(t.sentiment)} *${t.name}* (${t.team}) — ${mentionCount(t.count)}${trendPhrase(tTrend)} → Decide: ${t.action || 'review'}`)
+    })
+  }
+
+  lines.push(
+    '',
+    `_${results.totalReviews} reviews${results.dateRange ? ` · ${results.dateRange.earliest}–${results.dateRange.latest}` : ''} · ${pct(results.sentiment.negative)}% negative / ${pct(results.sentiment.positive)}% positive_`
+  )
+  return lines.join('\n')
+}
+
+function downloadReportPdf(regionLabel: string, results: AnalysisResult, filteredThemes: Theme[], trend: TrendData | null) {
+  const pct = reportPct(results)
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' })
+  const margin = 16
+  const pageWidth = doc.internal.pageSize.getWidth()
+  const pageHeight = doc.internal.pageSize.getHeight()
+  const maxWidth = pageWidth - margin * 2
+  let y = margin
+
+  // Default Helvetica only covers WinAnsi — normalize fancy punctuation / strip
+  // unsupported glyphs so multilingual quotes don't render as blank boxes.
+  const safe = (s: string) =>
+    s
+      .replace(/[\u2018\u2019\u201A]/g, "'")
+      .replace(/[\u201C\u201D\u201E]/g, '"')
+      .replace(/[\u2013\u2014]/g, '-')
+      .replace(/\u2026/g, '...')
+      .replace(/\u00A0/g, ' ')
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g, '')
+
+  const ensureSpace = (needed: number) => {
+    if (y + needed <= pageHeight - margin) return
+    doc.addPage()
+    y = margin
+  }
+
+  const write = (text: string, opts?: { size?: number; style?: 'normal' | 'bold' | 'italic'; color?: [number, number, number]; gap?: number }) => {
+    const size = opts?.size ?? 10
+    const style = opts?.style ?? 'normal'
+    const gap = opts?.gap ?? 1.2
+    doc.setFont('helvetica', style)
+    doc.setFontSize(size)
+    if (opts?.color) doc.setTextColor(...opts.color)
+    else doc.setTextColor(17, 17, 17)
+    const lines = doc.splitTextToSize(safe(text), maxWidth) as string[]
+    const lineHeight = size * 0.4
+    ensureSpace(lines.length * lineHeight + gap)
+    doc.text(lines, margin, y)
+    y += lines.length * lineHeight + gap
+  }
+
+  write('Timeleft Review Analysis', { size: 16, style: 'bold', gap: 3 })
+  write(regionLabel, { size: 11, color: [102, 102, 102], gap: 2 })
+  if (results.dateRange) {
+    write(`Data period: ${results.dateRange.earliest} – ${results.dateRange.latest}`, { size: 10, color: [102, 102, 102], gap: 4 })
+  }
+
+  write(`Reviews processed: ${results.totalReviews}`, { size: 11, style: 'bold', gap: 2 })
+  if (trend) {
+    if (trend.priorTotal > 0) {
+      const delta = results.totalReviews - trend.priorTotal
+      write(`vs prior period: ${delta >= 0 ? '+' : ''}${delta} (was ${trend.priorTotal})`, { size: 10, gap: 2 })
+    } else {
+      write('vs prior period: no comparable data', { size: 10, gap: 2 })
     }
-    lines.push('')
+  }
+  write(
+    `Sentiment: ${pct(results.sentiment.negative)}% negative, ${pct(results.sentiment.neutral)}% neutral, ${pct(results.sentiment.positive)}% positive`,
+    { size: 10, gap: 4 }
+  )
+  write(`Themes (${filteredThemes.length} of ${results.themes.length}, ranked by impact)`, { size: 12, style: 'bold', gap: 4 })
+
+  filteredThemes.forEach((t, i) => {
+    ensureSpace(18)
+    write(`${i + 1}. ${t.name}  ·  ${t.team}`, { size: 11, style: 'bold', gap: 1.5 })
+    write(
+      `${t.percentage}% of reviewers (${t.count} of ${results.totalReviews}) · impact ${Math.round(t.impact * 100)}/100`,
+      { size: 10, color: [68, 68, 68], gap: 1.5 }
+    )
+    if (trend && trend.priorTotal > 0) {
+      const priorCount = trend.priorCounts.get(t.name) ?? 0
+      const delta = t.count - priorCount
+      write(`vs prior: ${delta >= 0 ? '+' : ''}${delta}`, { size: 9, color: [68, 68, 68], gap: 1.5 })
+    }
+    if (t.count <= THEME_LOW_CONFIDENCE_MAX) {
+      write(`Based on very few reviews (${t.count}) — treat as directional.`, { size: 9, color: [163, 91, 0], gap: 1.5 })
+    }
+    if (t.action) write(`Action: ${t.action}`, { size: 10, gap: 1.5 })
+    if (t.quotes[0]) write(`"${t.quotes[0]}"`, { size: 9, style: 'italic', color: [51, 51, 51], gap: 3 })
+    else y += 2
   })
-  lines.push('→ Full dashboard: [link]')
+
+  const stamp = new Date().toISOString().slice(0, 10)
+  const safeLabel = regionLabel.replace(/[^\w]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'report'
+  doc.save(`timeleft-review-${safeLabel}-${stamp}.pdf`)
+}
+
+function buildTeamSlack(team: Team, themes: Theme[], total: number, trend: TrendData | null): string {
+  if (themes.length === 0) return `*${team}* — no themes match the current filters.`
+
+  const [top, ...rest] = themes
+  const topTrend = themeTrend(trend, top)
+
+  const lines = [
+    `${priorityEmoji(top.sentiment)} *${top.name}* is ${team}'s #1 ${themeNoun(top.sentiment)} right now (${mentionCount(top.count)}${trendPhrase(topTrend)})`,
+    `Decide: ${top.action || 'review and assign an owner'}`,
+  ]
+  if (top.quotes[0]) {
+    const q = top.quotes[0]
+    lines.push(`💬 "${q.length > 140 ? q.slice(0, 140) + '…' : q}"`)
+  }
+
+  if (rest.length > 0) {
+    lines.push('', `Also up for ${team}:`)
+    rest.forEach((t, i) => {
+      const tTrend = themeTrend(trend, t)
+      lines.push(`${i + 2}. ${priorityEmoji(t.sentiment)} *${t.name}* — ${mentionCount(t.count)}${trendPhrase(tTrend)} → Decide: ${t.action || 'review'}`)
+    })
+  }
+
+  lines.push('', `_${total} reviews analysed_`, '→ Full dashboard: [link]')
   return lines.join('\n')
 }
