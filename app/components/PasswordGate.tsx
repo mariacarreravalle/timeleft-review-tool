@@ -2,39 +2,53 @@
 
 import { FormEvent, useEffect, useState } from 'react'
 
-const STORAGE_KEY = 'timeleft-review-auth'
-const PASSWORD = 'TL26MCV'
-
 export default function PasswordGate({ children }: { children: React.ReactNode }) {
   const [authed, setAuthed] = useState(false)
   const [ready, setReady] = useState(false)
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
-    try {
-      setAuthed(localStorage.getItem(STORAGE_KEY) === '1')
-    } catch {
-      setAuthed(false)
-    }
-    setReady(true)
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/auth', { method: 'GET', credentials: 'same-origin', cache: 'no-store' })
+        const data = await res.json().catch(() => null) as { ok?: boolean } | null
+        if (!cancelled) setAuthed(!!data?.ok)
+      } catch {
+        if (!cancelled) setAuthed(false)
+      } finally {
+        if (!cancelled) setReady(true)
+      }
+    })()
+    return () => { cancelled = true }
   }, [])
 
-  const onSubmit = (e: FormEvent) => {
+  const onSubmit = async (e: FormEvent) => {
     e.preventDefault()
-    if (password === PASSWORD) {
-      try {
-        localStorage.setItem(STORAGE_KEY, '1')
-      } catch {
-        // Still unlock this session even if storage is blocked.
+    if (submitting) return
+    setSubmitting(true)
+    setError(false)
+    try {
+      const res = await fetch('/api/auth', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+      })
+      if (!res.ok) {
+        setError(true)
+        return
       }
       setAuthed(true)
-      setError(false)
       setPassword('')
-      return
+    } catch {
+      setError(true)
+    } finally {
+      setSubmitting(false)
     }
-    setError(true)
   }
 
   if (!ready) {
@@ -85,8 +99,8 @@ export default function PasswordGate({ children }: { children: React.ReactNode }
             Incorrect password
           </p>
         )}
-        <button type="submit" className="btn-primary w-full mt-4 h-10">
-          Unlock
+        <button type="submit" disabled={submitting} className="btn-primary w-full mt-4 h-10 disabled:opacity-60">
+          {submitting ? 'Unlocking…' : 'Unlock'}
         </button>
       </form>
     </div>

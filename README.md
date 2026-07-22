@@ -1,134 +1,115 @@
 # Timeleft Review Analyser
 
-A web tool for non-technical teams (Ops, Product) to upload CSV of app store reviews and get instant insights: top themes by volume, sentiment per theme, severity scoring, trends vs prior window, and rating/volume charts.
+Internal tool for turning app-store review CSVs into ranked themes, urgency scores, and team actions.
 
-## Features
-
-- **CSV Upload**: Drag-and-drop or click to upload app store review CSVs
-- **Theme Extraction**: LLM-powered clustering of reviews into actionable themes
-- **Sentiment Analysis**: Per-theme sentiment scoring
-- **Severity Scoring**: Automatic ranking of issues by impact (volume + sentiment + urgency signals)
-- **Trend Analysis**: Compare current reviews against a prior window to spot momentum
-- **Charts**: Visual breakdown of ratings and review volume over time
-- **Slack Integration**: Draft a Slack update from top findings (ready to push via MAKE/Zapier)
-
-## Quick Start
-
-```bash
-npm install
-npm run dev
-```
-
-Then open [http://localhost:3000](http://localhost:3000)
-
-Upload a CSV with columns:
-- `Submission date` - ISO datetime
-- `Review` or `Translated review` - review text
-- `Rating` - 1-5 numerical rating
-- `Store`, `Country`, `Version` - optional metadata for filtering
-
-## What We Built
-
-### File Structure
-
-```
-app/
-  page.tsx          - Main upload + results UI
-  layout.tsx        - Root layout with Tailwind
-  api/
-    analyze/        - POST endpoint for review analysis
-globals.css         - Tailwind imports
-```
-
-### Key Decisions & Tradeoffs
-
-**Why Next.js 14 + Turbo:**
-- Fast cold starts for Vercel deployment
-- Streaming API responses (future: real-time analysis progress)
-- Built-in CSV parsing on client to avoid large uploads
-- Tailwind for quick, non-technical-friendly UI
-
-**Why Claude API for theme extraction:**
-- Handles multi-language reviews (German, Portuguese, etc.) without extra config
-- Clusters themes by semantic meaning, not keyword matching
-- Extracts representative quotes automatically
-- Sentiment scoring is contextual (e.g., "it's expensive but worth it" reads differently than "it's expensive and useless")
-
-**What I skipped and why:**
-1. **User authentication** – Not in spec. Single-upload flow; no persistence needed.
-2. **Database** – No requirement to save analyses across sessions. All in-memory during processing.
-3. **Real-time websockets** – Unnecessary. CSV parsing is <1s on client, API call is <5s.
-4. **Custom theme taxonomy** – Teams don't want to configure categories. LLM auto-clustering is faster to ship and works across domains.
-5. **Filtering/sorting UI** – Scope creep. Focus on the first output; teams can ask for it later.
-6. **SEO/analytics** – Internal tool for case study, not production web product.
-
-**Why no polling/retry logic:**
-- Small CSV (600 rows) means single API call, no partial progress.
-- If it fails, user re-uploads. Simple.
-
-## Deployment
-
-1. Push to GitHub:
-   ```bash
-   git remote add origin https://github.com/YOUR_USERNAME/timeleft-review-tool.git
-   git branch -M main
-   git push -u origin main
-   ```
-
-2. Deploy to Vercel:
-   - Go to https://vercel.com
-   - Click "Import Project"
-   - Paste your GitHub repo URL
-   - Click "Deploy"
-   - Vercel auto-builds on every push to `main`
-
-3. Environment variables:
-   - Add `ANTHROPIC_API_KEY` to Vercel project settings
-   - (Vercel will prompt for it if you try to deploy without it)
-
-4. Your deployed URL will be: `https://timeleft-review-tool.vercel.app`
-
-## Next Steps (In Priority Order)
-
-### High-value, low-effort:
-1. **Comparison date range picker** – Let users pick "compare against last 2 weeks" instead of hardcoded. ~30 min.
-2. **Export results as CSV** – Analysts want to pivot the data in Excel. ~20 min.
-3. **Theme/sentiment drill-down** – Click a theme to see all reviews that match it. ~40 min.
-
-### Nice-to-have but deferred:
-- Downloadable Slack message template (render as rich JSON for MAKE to consume)
-- Multi-CSV upload (batch compare app versions)
-- Caching layer (store parsed CSVs to avoid re-processing identical uploads)
-
-### Technical debt (skip for now):
-- Rate limiting on API
-- Error tracking (Sentry)
-- Input validation (max file size, column validation)
-- Proper logging
-- Unit tests
-
-## Decisions Made Thinking
-
-**Theme extraction via prompt:** Initially considered training a simple classifier on labelled examples, but decided against it because:
-- 600 reviews is a tiny dataset
-- Themes vary wildly across domains (app pricing, UX bugs, feature requests)
-- LLM clustering is "good enough" and ships now
-- If accuracy becomes a blocker, we have a clear path to fine-tune
-
-**Sentiment as a score, not binary:** Reviews like "great app but expensive" need nuance. We ask Claude for a -1 to +1 scale per theme, not just "positive/negative." Costs more tokens, but gives Product teams the signal they actually need.
-
-**Severity = volume + sentiment + urgency:** Not just "most reviews talk about X." We weight it by:
-- How many reviews mention the theme (volume)
-- Average sentiment of those reviews (are they positive complaints or negative rants?)
-- Presence of keywords like "refund," "cancel," "uninstall," "waste" (urgency)
-
-This way, "users want more cities" (high volume, neutral) ranks differently from "can't cancel subscription" (moderate volume, high urgency).
+Upload a CSV → AI clusters the issues → filter the view → mark what’s fixed → export or ask follow-ups in plain English.
 
 ---
 
-## Chat History
+## Live access
 
-Full conversation available in GitHub commit messages and this README's decisions section. The user emphasized:
-- "Push back, flag dead ends, don't sanitize" → We skipped over-engineering (auth, persistence, ML training).
-- "Build for the consumer" (non-technical teams) → Simple upload, no config, one-click Slack draft.
-- "2-3 hours, shouldn't take more" → Constrained scope strictly. No UI polish, no animations, focus on insights quality.
+| | |
+|---|---|
+| **URL** | https://timeleft-review-tool.vercel.app/ |
+| **Password** | [Provided via email for security] |
+
+Open the URL, unlock with the password, and upload a review CSV. No local setup required for day-to-day use.
+
+---
+
+## What it does
+
+- **Theme clustering** — Groups reviews into concrete issues, each with an owner team and suggested next step
+- **Urgency ranking** — Scores impact from volume, negativity, and urgent language
+- **Filters** — Multi-select country, timeframe, sentiment, and team
+- **Evidence** — App Store–style quote cards under each theme
+- **Mark as solved** — Stamps an issue with name, team, and date (`dd/mm/yy`)
+- **Ask the analyst** — Plain-English questions over the current filtered slice
+- **Export** — PDF download, or copy as Slack / email text
+- **Access gate** — Password unlock with a server-side session; API routes are protected
+
+---
+
+## How to use
+
+1. Open the live URL and unlock with the shared password  
+2. Upload an App Store or Google Play review CSV  
+3. Wait for analysis (progress replaces the upload card)  
+4. Filter by country, month, sentiment, or team as needed  
+5. Expand a theme to read quote cards; mark issues solved when fixed  
+6. Use **Ask the analyst** for follow-up questions  
+7. Export a PDF or copy Slack / email text for stakeholders  
+
+Repeat uploads of the same file reuse the cached taxonomy in that browser, so you don’t re-spend on identical exports.
+
+---
+
+## Local setup
+
+For development only.
+
+```bash
+npm install
+cp .env.example .env.local
+# fill in the variables below
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000).
+
+### Environment variables
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | Yes | Claude API key (server-only) |
+| `APP_ACCESS_PASSWORD` | Yes in production | Shared unlock password |
+| `AUTH_SECRET` | Yes in production | Signs httpOnly session cookies |
+| `ANALYSIS_MODEL` | No | Theme extraction model override |
+| `CHAT_MODEL` | No | Analyst chat model override |
+
+Never commit real secrets. `.env.local` is gitignored.
+
+### Deploy
+
+1. Push to GitHub  
+2. Import the repo in Vercel  
+3. Set the environment variables in project settings  
+4. Deploy  
+
+---
+
+## Stack
+
+- Next.js (App Router), React, TypeScript, Tailwind  
+- Claude (Anthropic) for theme extraction and analyst chat  
+- Recharts for rating and volume charts  
+- jsPDF for PDF export  
+
+---
+
+## Roadmap
+
+This release intentionally prioritises a **solid core data flow**: upload → analyse → filter → act → export. That keeps processing fast, the UI easy to navigate, and the tool useful on day one.
+
+Left for a next phase (not cut because they lack value — deferred so the first draft stayed focused):
+
+- **Historical data trends** — Proper multi-period comparison and regression spotting beyond the current prior-month delta  
+- **Shared resolved state** — Database sync so “mark as solved” stamps are visible across teammates’ machines (today they are browser-local only)  
+- **Automated Slack alerts via Make** — e.g. notify a channel when someone resolves an issue, or when urgency spikes  
+- **Richer drill-down** — Full review lists per theme and CSV export of matches  
+- **Hardening for wider rollout** — API rate limiting and audit logging beyond the current auth gate and payload limits  
+
+---
+
+## Security
+
+- The Anthropic key never ships to the browser  
+- The unlock password is checked server-side; the session cookie is httpOnly  
+- `/api/analyze` and `/api/chat` require a valid session  
+- Review cache and resolved stamps live in browser localStorage only (not shared across devices)
+
+---
+
+## License
+
+Internal Timeleft tool. Not published as open source.

@@ -465,12 +465,16 @@ export default function Home() {
 
       const response = await fetch('/api/analyze', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reviews: parsedReviews })
       })
 
       if (!response.ok) {
         const body = await response.json().catch(() => null)
+        if (response.status === 401) {
+          throw new Error('Session expired. Refresh the page and unlock again.')
+        }
         throw new Error(body?.error || `Analysis failed (HTTP ${response.status})`)
       }
       const data = await response.json() as { themes: ThemeTaxonomy[] }

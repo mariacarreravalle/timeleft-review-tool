@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
+import { isAuthenticated, noStoreJson, unauthorized } from '../../lib/serverAuth'
 
 export const maxDuration = 60
 export const runtime = 'nodejs'
@@ -45,11 +46,10 @@ interface ChatMessage {
 
 export async function POST(req: NextRequest) {
   try {
+    if (!isAuthenticated(req)) return unauthorized()
+
     if (!process.env.ANTHROPIC_API_KEY) {
-      return NextResponse.json(
-        { error: 'ANTHROPIC_API_KEY is not set. Add it in your .env.local (local) or Vercel project settings (deployed).' },
-        { status: 500 }
-      )
+      return noStoreJson({ error: 'Chat is not configured.' }, { status: 500 })
     }
 
     const body = await req.json() as {
@@ -60,13 +60,13 @@ export async function POST(req: NextRequest) {
 
     const question = String(body.question || '').trim()
     if (!question) {
-      return NextResponse.json({ error: 'Please enter a question.' }, { status: 400 })
+      return noStoreJson({ error: 'Please enter a question.' }, { status: 400 })
     }
     if (question.length > MAX_QUESTION_CHARS) {
-      return NextResponse.json({ error: 'Question is too long.' }, { status: 400 })
+      return noStoreJson({ error: 'Question is too long.' }, { status: 400 })
     }
     if (!body.context || typeof body.context !== 'object') {
-      return NextResponse.json({ error: 'Missing analysis context.' }, { status: 400 })
+      return noStoreJson({ error: 'Missing analysis context.' }, { status: 400 })
     }
 
     const context = sanitizeContext(body.context)
@@ -93,8 +93,8 @@ export async function POST(req: NextRequest) {
 
     if (!claudeResponse.ok) {
       const err = await claudeResponse.text()
-      console.error('Claude chat API error:', err)
-      return NextResponse.json({ error: 'Chat service error. Please try again.' }, { status: 500 })
+      console.error('Claude chat API error:', err.slice(0, 500))
+      return noStoreJson({ error: 'Chat service error. Please try again.' }, { status: 500 })
     }
 
     const claudeData = await claudeResponse.json() as {
@@ -107,13 +107,13 @@ export async function POST(req: NextRequest) {
       .trim()
 
     if (!answer) {
-      return NextResponse.json({ error: 'Empty response from the analyst. Try again.' }, { status: 502 })
+      return noStoreJson({ error: 'Empty response from the analyst. Try again.' }, { status: 502 })
     }
 
-    return NextResponse.json({ answer })
+    return noStoreJson({ answer })
   } catch (error) {
     console.error('Chat error:', error)
-    return NextResponse.json({ error: 'Chat failed' }, { status: 500 })
+    return noStoreJson({ error: 'Chat failed' }, { status: 500 })
   }
 }
 

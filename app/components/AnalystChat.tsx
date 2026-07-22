@@ -62,6 +62,7 @@ export default function AnalystChat({ context }: { context: AnalystChatContext }
       const history = messages.slice(-8)
       const response = await fetch('/api/chat', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question: q, history, context }),
       })

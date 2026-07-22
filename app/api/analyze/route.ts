@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
+import { isAuthenticated, noStoreJson, unauthorized } from '../../lib/serverAuth'
 
 // Vercel kills serverless functions at 10s by default (Hobby plan). Classifying
 // all reviews can take 15-30s, so raise the ceiling or the request 504s.
@@ -7,6 +8,8 @@ export const runtime = 'nodejs'
 
 // Model is env-overridable. Default to Sonnet: fast + good enough for clustering.
 const ANALYSIS_MODEL = process.env.ANALYSIS_MODEL || 'claude-sonnet-5'
+const MAX_REVIEWS = 5000
+const MAX_REVIEW_CHARS = 2000
 
 const TEAMS = ['Product', 'Tech', 'CX & Support', 'Ops', 'Marketing', 'Other'] as const
 type Team = typeof TEAMS[number]
@@ -52,17 +55,33 @@ interface ThemeTaxonomy {
 
 export async function POST(req: NextRequest) {
   try {
-    const { reviews } = await req.json() as { reviews: Review[] }
-
-    if (!reviews || reviews.length === 0) {
-      return NextResponse.json({ error: 'No reviews provided' }, { status: 400 })
-    }
+    if (!isAuthenticated(req)) return unauthorized()
 
     if (!process.env.ANTHROPIC_API_KEY) {
-      return NextResponse.json(
-        { error: 'ANTHROPIC_API_KEY is not set. Add it in your .env.local (local) or Vercel project settings (deployed).' },
-        { status: 500 }
+      return noStoreJson({ error: 'Analysis is not configured.' }, { status: 500 })
+    }
+
+    const body = await req.json().catch(() => null) as { reviews?: Review[] } | null
+    const reviews = Array.isArray(body?.reviews) ? body!.reviews : null
+
+    if (!reviews || reviews.length === 0) {
+      return noStoreJson({ error: 'No reviews provided' }, { status: 400 })
+    }
+    if (reviews.length > MAX_REVIEWS) {
+      return noStoreJson(
+        { error: `Too many reviews (max ${MAX_REVIEWS}). Split the export and try again.` },
+        { status: 413 }
       )
+    }
+
+    const sanitized = reviews.map(r => ({
+      date: String(r?.date || '').slice(0, 64),
+      rating: Number(r?.rating) || 0,
+      text: String(r?.text || '').replace(/\s+/g, ' ').trim().slice(0, MAX_REVIEW_CHARS),
+    })).filter(r => r.text.length > 0)
+
+    if (sanitized.length === 0) {
+      return noStoreJson({ error: 'No usable review text found.' }, { status: 400 })
     }
 
     const claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
@@ -79,14 +98,14 @@ export async function POST(req: NextRequest) {
         // adaptive thinking to cut latency and variance.
         thinking: { type: 'disabled' },
         output_config: { format: { type: 'json_schema', schema: OUTPUT_SCHEMA } },
-        messages: [{ role: 'user', content: buildAnalysisPrompt(reviews) }]
+        messages: [{ role: 'user', content: buildAnalysisPrompt(sanitized) }]
       })
     })
 
     if (!claudeResponse.ok) {
       const err = await claudeResponse.text()
-      console.error('Claude API error:', err)
-      return NextResponse.json({ error: 'Analysis service error' }, { status: 500 })
+      console.error('Claude API error:', err.slice(0, 500))
+      return noStoreJson({ error: 'Analysis service error' }, { status: 500 })
     }
 
     const claudeData = await claudeResponse.json() as any
@@ -97,19 +116,19 @@ export async function POST(req: NextRequest) {
       .map((b: any) => b.text)
       .join('\n')
 
-    const themes = parseTaxonomy(analysisText, reviews.length)
+    const themes = parseTaxonomy(analysisText, sanitized.length)
 
     if (themes.length === 0) {
-      return NextResponse.json(
+      return noStoreJson(
         { error: 'The analysis came back empty. Try again — if it persists, the review text may be too short to cluster.' },
         { status: 502 }
       )
     }
 
-    return NextResponse.json({ themes })
+    return noStoreJson({ themes })
   } catch (error) {
     console.error('Analysis error:', error)
-    return NextResponse.json({ error: 'Analysis failed' }, { status: 500 })
+    return noStoreJson({ error: 'Analysis failed' }, { status: 500 })
   }
 }
 
