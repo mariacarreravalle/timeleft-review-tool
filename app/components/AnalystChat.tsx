@@ -1,6 +1,6 @@
 'use client'
 
-import { FormEvent, useEffect, useRef, useState } from 'react'
+import { FormEvent, useEffect, useRef, useState, type ReactNode } from 'react'
 
 export interface AnalystChatContext {
   filterLabel: string
@@ -123,7 +123,7 @@ export default function AnalystChat({ context }: { context: AnalystChatContext }
         </div>
       )}
 
-      <div className="rounded-2xl border border-tan bg-cream/40 min-h-[12rem] max-h-80 overflow-y-auto p-4 mb-4 space-y-3">
+      <div className="rounded-2xl border border-tan bg-cream/40 min-h-[12rem] max-h-[28rem] overflow-y-auto p-4 sm:p-5 mb-4 space-y-4">
         {messages.length === 0 && !loading ? (
           <p className="text-sm text-muted-dark leading-relaxed">
             Try an example above, or type your own question — for example about a country, theme, or team.
@@ -134,15 +134,15 @@ export default function AnalystChat({ context }: { context: AnalystChatContext }
               key={`${m.role}-${i}`}
               className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >
-              <div
-                className={`max-w-[90%] sm:max-w-[80%] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap ${
-                  m.role === 'user'
-                    ? 'bg-ink text-cream'
-                    : 'bg-white border border-tan text-ink'
-                }`}
-              >
-                {m.content}
-              </div>
+              {m.role === 'user' ? (
+                <div className="max-w-[90%] sm:max-w-[75%] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap bg-ink text-cream">
+                  {m.content}
+                </div>
+              ) : (
+                <div className="max-w-[95%] sm:max-w-[88%] rounded-2xl px-4 py-3.5 text-sm bg-white border border-tan text-ink shadow-sm">
+                  <AssistantMessage content={m.content} />
+                </div>
+              )}
             </div>
           ))
         )}
@@ -181,4 +181,150 @@ export default function AnalystChat({ context }: { context: AnalystChatContext }
       </form>
     </div>
   )
+}
+
+/** Renders the lightweight markdown Claude tends to return (bold, lists, paragraphs). */
+function AssistantMessage({ content }: { content: string }) {
+  const blocks = parseBlocks(content)
+
+  return (
+    <div className="space-y-3 leading-relaxed text-[13.5px] sm:text-sm">
+      {blocks.map((block, i) => {
+        if (block.type === 'ul') {
+          return (
+            <ul key={i} className="space-y-2 pl-0 list-none">
+              {block.items.map((item, j) => (
+                <li key={j} className="flex gap-2.5 items-start">
+                  <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-accent" aria-hidden />
+                  <span className="min-w-0 text-ink/90">{renderInline(item)}</span>
+                </li>
+              ))}
+            </ul>
+          )
+        }
+        if (block.type === 'ol') {
+          return (
+            <ol key={i} className="space-y-2 pl-0 list-none">
+              {block.items.map((item, j) => (
+                <li key={j} className="flex gap-2.5 items-start">
+                  <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-cream border border-tan text-[11px] font-bold text-muted-dark">
+                    {j + 1}
+                  </span>
+                  <span className="min-w-0 pt-0.5 text-ink/90">{renderInline(item)}</span>
+                </li>
+              ))}
+            </ol>
+          )
+        }
+        return (
+          <p key={i} className="text-ink/90">
+            {renderInline(block.text)}
+          </p>
+        )
+      })}
+    </div>
+  )
+}
+
+type Block =
+  | { type: 'p'; text: string }
+  | { type: 'ul'; items: string[] }
+  | { type: 'ol'; items: string[] }
+
+function parseBlocks(content: string): Block[] {
+  const lines = content.replace(/\r\n/g, '\n').trim().split('\n')
+  const blocks: Block[] = []
+  let para: string[] = []
+  let list: { type: 'ul' | 'ol'; items: string[] } | null = null
+
+  const flushPara = () => {
+    if (!para.length) return
+    const text = para.join(' ').replace(/\s+/g, ' ').trim()
+    if (text) blocks.push({ type: 'p', text })
+    para = []
+  }
+
+  const flushList = () => {
+    if (!list) return
+    blocks.push(list)
+    list = null
+  }
+
+  for (const raw of lines) {
+    const line = raw.trimEnd()
+    const bullet = /^\s*[-*•]\s+(.+)$/.exec(line)
+    const numbered = /^\s*(\d+)[.)]\s+(.+)$/.exec(line)
+
+    if (bullet) {
+      flushPara()
+      if (!list || list.type !== 'ul') {
+        flushList()
+        list = { type: 'ul', items: [] }
+      }
+      list.items.push(bullet[1].trim())
+      continue
+    }
+
+    if (numbered) {
+      flushPara()
+      if (!list || list.type !== 'ol') {
+        flushList()
+        list = { type: 'ol', items: [] }
+      }
+      list.items.push(numbered[2].trim())
+      continue
+    }
+
+    if (!line.trim()) {
+      flushPara()
+      flushList()
+      continue
+    }
+
+    flushList()
+    para.push(line.trim())
+  }
+
+  flushPara()
+  flushList()
+  return blocks.length ? blocks : [{ type: 'p', text: content.trim() }]
+}
+
+function renderInline(text: string): ReactNode[] {
+  // **bold**, *italic*, `code` — enough for analyst answers without a markdown lib.
+  const parts: ReactNode[] = []
+  const re = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g
+  let last = 0
+  let match: RegExpExecArray | null
+  let key = 0
+
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > last) {
+      parts.push(text.slice(last, match.index))
+    }
+    const token = match[0]
+    if (token.startsWith('**')) {
+      parts.push(
+        <strong key={key++} className="font-semibold text-ink">
+          {token.slice(2, -2)}
+        </strong>
+      )
+    } else if (token.startsWith('*')) {
+      parts.push(
+        <em key={key++} className="italic text-ink/90">
+          {token.slice(1, -1)}
+        </em>
+      )
+    } else {
+      parts.push(
+        <code key={key++} className="rounded bg-cream px-1 py-0.5 text-[12px] font-medium text-ink">
+          {token.slice(1, -1)}
+        </code>
+      )
+    }
+    last = match.index + token.length
+  }
+
+  if (last < text.length) parts.push(text.slice(last))
+  return parts
 }

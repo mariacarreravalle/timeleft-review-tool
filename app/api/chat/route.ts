@@ -201,7 +201,8 @@ Rules:
 - Answer ONLY using the dashboard context and review sample below. If something isn't in the data, say so.
 - Respect the current filter scope: ${context.filterLabel}.
 - Prefer concrete numbers (counts, %, impact scores, team owners) over vague claims.
-- Keep answers short and decision-oriented (aim for 1 short paragraph + bullets when useful).
+- Keep answers short and decision-oriented.
+- Format for a chat UI that renders markdown: lead with one clear recommendation in **bold**, then a short blank line, then 2–5 bullet points ("- ...") with the why / evidence. Avoid walls of text on one line.
 - Do not invent themes, quotes, or ratings that aren't present.
 - Country codes in the data are ISO-style (e.g. FR = France, GB = United Kingdom).
 - British English spelling.
