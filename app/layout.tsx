@@ -1,4 +1,5 @@
 import './globals.css'
+import PasswordGate from './components/PasswordGate'
 
 export const metadata = {
   title: 'Timeleft Review Analyzer',
@@ -12,7 +13,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <PasswordGate>{children}</PasswordGate>
+      </body>
     </html>
   )
 }
