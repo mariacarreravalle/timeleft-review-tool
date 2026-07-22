@@ -161,6 +161,31 @@ function findColumn(headers: string[], keywords: string[], exclude: string[] = [
   return null
 }
 
+/**
+ * Normalize a CSV review date for timeframe math.
+ * - Empty / unparseable → '' (undated; only matches the "all" window)
+ * - Future timestamps → capped at now (typos must not pull the calendar anchor forward)
+ * - Otherwise keep the original string so month prefixes stay TZ-stable
+ */
+export function normalizeReviewDate(raw: string): string {
+  const s = (raw || '').trim()
+  if (!s) return ''
+  const t = Date.parse(s)
+  if (isNaN(t)) return ''
+  const now = Date.now()
+  if (t > now) return new Date(now).toISOString()
+  return s
+}
+
+/** Capped epoch ms for a review date, or null if undated / unparseable. */
+export function parseReviewTime(dateStr: string, nowMs: number = Date.now()): number | null {
+  const s = (dateStr || '').trim()
+  if (!s) return null
+  const t = Date.parse(s)
+  if (isNaN(t)) return null
+  return Math.min(t, nowMs)
+}
+
 export function parseReviewsCsv(raw: string): ParseResult {
   const rows = normalizeRawCsv(raw)
   if (rows.length === 0) {
@@ -210,7 +235,7 @@ export function parseReviewsCsv(raw: string): ParseResult {
     }
 
     reviews.push({
-      date: dateIdx >= 0 ? (fields[dateIdx] || '') : '',
+      date: dateIdx >= 0 ? normalizeReviewDate(fields[dateIdx] || '') : '',
       rating: ratingIdx >= 0 ? (parseInt(fields[ratingIdx], 10) || 0) : 0,
       text,
       country: countryIdx >= 0 ? (fields[countryIdx] || '').trim() : '',

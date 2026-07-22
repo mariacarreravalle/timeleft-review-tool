@@ -3,13 +3,21 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { jsPDF } from 'jspdf'
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
-import { parseReviewsCsv, type Review } from './lib/parseReviews'
+import { normalizeReviewDate, parseReviewTime, parseReviewsCsv, type Review } from './lib/parseReviews'
 import {
   hashText, findCached, saveToCache, loadActive, saveActive, clearActive,
   loadResolved, saveResolved, loadResolverProfile, saveResolverProfile,
   type CachedAnalysis, type SavedFilters, type ResolvedMark
 } from './lib/persistence'
 import AnalystChat from './components/AnalystChat'
+
+/** Re-apply date caps when hydrating older cached analyses. */
+function withNormalizedDates(reviews: Review[]): Review[] {
+  return reviews.map(r => {
+    const date = normalizeReviewDate(r.date)
+    return date === r.date ? r : { ...r, date }
+  })
+}
 
 type Team = 'Product' | 'Tech' | 'CX & Support' | 'Ops' | 'Marketing' | 'Other'
 
@@ -113,17 +121,33 @@ function monthsLabel(selected: MonthKey[]): string {
   return selected.map(m => MONTH_LABEL[m]).join(', ')
 }
 
-/** YYYY-MM from a review date string (prefers the literal prefix to avoid TZ shifts). */
+/**
+ * YYYY-MM from a review date string.
+ * Prefers the literal YYYY-MM prefix to avoid TZ shifts, but never returns a
+ * month after the current calendar month (future typo rows are capped).
+ * Undated / unparseable → null (excluded from specific months; kept in "all").
+ */
 function monthKey(dateStr: string): string | null {
-  const m = /^(\d{4})-(\d{2})/.exec(dateStr.trim())
-  if (m) return `${m[1]}-${m[2]}`
-  const t = Date.parse(dateStr)
-  if (isNaN(t)) return null
+  const trimmed = dateStr.trim()
+  if (!trimmed) return null
+
+  const now = new Date()
+  const nowKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+
+  const m = /^(\d{4})-(\d{2})/.exec(trimmed)
+  if (m) {
+    const key = `${m[1]}-${m[2]}`
+    return key > nowKey ? nowKey : key
+  }
+
+  const t = parseReviewTime(trimmed)
+  if (t == null) return null
   const d = new Date(t)
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
 }
 
 function inTimeframe(dateStr: string, selectedMonths: MonthKey[]): boolean {
+  // Empty selection = "all" — undated rows stay visible here.
   if (selectedMonths.length === 0) return true
   const key = monthKey(dateStr)
   return !!key && selectedMonths.includes(key as MonthKey)
@@ -170,7 +194,7 @@ function formatRelativeTime(iso: string): string {
 }
 
 function computeDateRange(reviews: Review[]): { earliest: string; latest: string } | null {
-  const times = reviews.map(r => Date.parse(r.date)).filter(t => !isNaN(t))
+  const times = reviews.map(r => parseReviewTime(r.date)).filter((t): t is number => t != null)
   if (!times.length) return null
   return { earliest: formatDate(Math.min(...times)), latest: formatDate(Math.max(...times)) }
 }
@@ -218,7 +242,12 @@ function ratingChart(reviews: Review[]) {
 
 function volumeChart(reviews: Review[]) {
   const byDate: Record<string, number> = {}
-  reviews.forEach(r => { if (r.date) { const d = r.date.split('T')[0]; byDate[d] = (byDate[d] || 0) + 1 } })
+  reviews.forEach(r => {
+    const t = parseReviewTime(r.date)
+    if (t == null) return
+    const d = new Date(t).toISOString().slice(0, 10)
+    byDate[d] = (byDate[d] || 0) + 1
+  })
   return Object.entries(byDate).sort(([a], [b]) => a.localeCompare(b)).map(([date, count]) => ({ date, count })).slice(-30)
 }
 
@@ -433,7 +462,7 @@ export default function Home() {
       // of the same export comparable rather than independently reworded.
       const cached = findCached(csvHash)
       if (cached) {
-        setReviews(cached.reviews)
+        setReviews(withNormalizedDates(cached.reviews))
         setTaxonomy(cached.taxonomy as ThemeTaxonomy[])
         setSelectedCountries([])
         setSelectedMonths([])
@@ -508,7 +537,7 @@ export default function Home() {
   const resumeSession = () => {
     if (!resumeCandidate) return
     const { entry, filters } = resumeCandidate
-    setReviews(entry.reviews)
+    setReviews(withNormalizedDates(entry.reviews))
     setTaxonomy(entry.taxonomy as ThemeTaxonomy[])
     setSelectedCountries(filters.countries)
     setSelectedMonths(normalizeMonths(filters.timeframe))
