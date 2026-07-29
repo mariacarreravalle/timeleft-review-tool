@@ -500,7 +500,7 @@ export default function Home() {
         (detectedColumns.country ? ` · country: "${detectedColumns.country}"` : '')
       )
 
-      // Large exports are analysed in batches of 100, then merged into the same
+      // Large exports are analysed in batches of 60, then merged into the same
       // { themes } taxonomy the dashboard and Make webhook already expect.
       const themes = await analyzeReviewsBatched(parsedReviews, setAnalysisProgress)
 
@@ -745,7 +745,7 @@ export default function Home() {
   )
 }
 
-const ANALYSIS_BATCH_SIZE = 100
+const ANALYSIS_BATCH_SIZE = 60
 
 type AnalysisProgress = {
   phase: 'batch' | 'merge'
@@ -765,22 +765,10 @@ async function analyzeReviewsBatched(
     const batch = reviews.slice(offset, offset + ANALYSIS_BATCH_SIZE)
     onProgress?.({ phase: 'batch', completedBatches: batchIdx, totalBatches })
 
-    const response = await fetch('/api/analyze', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reviews: batch, indexOffset: offset }),
-    })
-
-    if (!response.ok) {
-      const body = await response.json().catch(() => null)
-      if (response.status === 401) {
-        throw new Error('Session expired. Refresh the page and unlock again.')
-      }
-      throw new Error(body?.error || `Analysis failed (HTTP ${response.status})`)
-    }
-
-    const data = await response.json() as { themes: ThemeTaxonomy[] }
+    const data = await postAnalyze(
+      { reviews: batch, indexOffset: offset },
+      'Analysis failed'
+    )
     for (let ti = 0; ti < data.themes.length; ti++) {
       sources.push({ ...data.themes[ti], id: `b${batchIdx}t${ti}` })
     }
@@ -793,23 +781,62 @@ async function analyzeReviewsBatched(
 
   onProgress?.({ phase: 'merge', completedBatches: totalBatches, totalBatches })
 
-  const mergeResponse = await fetch('/api/analyze', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mergeSources: sources }),
-  })
+  const merged = await postAnalyze(
+    { mergeSources: sources },
+    'Could not combine themes'
+  )
+  return merged.themes
+}
 
-  if (!mergeResponse.ok) {
-    const body = await mergeResponse.json().catch(() => null)
-    if (mergeResponse.status === 401) {
-      throw new Error('Session expired. Refresh the page and unlock again.')
+/** POST /api/analyze with one retry on gateway/timeouts (common on the last slow batch). */
+async function postAnalyze(
+  body: Record<string, unknown>,
+  fallbackLabel: string
+): Promise<{ themes: ThemeTaxonomy[] }> {
+  const maxAttempts = 2
+  let lastError: Error | null = null
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => null)
+        if (response.status === 401) {
+          throw new Error('Session expired. Refresh the page and unlock again.')
+        }
+        const message = errBody?.error || `${fallbackLabel} (HTTP ${response.status})`
+        const retryable = response.status === 504 || response.status === 502
+        if (retryable && attempt < maxAttempts) {
+          lastError = new Error(message)
+          await sleep(1200 * attempt)
+          continue
+        }
+        throw new Error(message)
+      }
+
+      return await response.json() as { themes: ThemeTaxonomy[] }
+    } catch (err) {
+      // fetch() network failures are TypeError; our own Error throws should propagate.
+      if (err instanceof TypeError && attempt < maxAttempts) {
+        lastError = err
+        await sleep(1200 * attempt)
+        continue
+      }
+      throw err
     }
-    throw new Error(body?.error || `Could not combine themes (HTTP ${mergeResponse.status})`)
   }
 
-  const merged = await mergeResponse.json() as { themes: ThemeTaxonomy[] }
-  return merged.themes
+  throw lastError || new Error(fallbackLabel)
+}
+
+function sleep(ms: number) {
+  return new Promise<void>(resolve => window.setTimeout(resolve, ms))
 }
 
 /* ---------- Upload ---------- */

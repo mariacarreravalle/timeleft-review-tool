@@ -2,14 +2,16 @@ import { NextRequest } from 'next/server'
 import { isAuthenticated, noStoreJson, unauthorized } from '../../lib/serverAuth'
 
 // Single-batch analyse is usually 10-30s. Merge is a lighter follow-up call.
+// Keep under Vercel's kill window so we can return a JSON 504 instead of a bare gateway timeout.
 export const maxDuration = 60
 export const runtime = 'nodejs'
 
 const ANALYSIS_MODEL = process.env.ANALYSIS_MODEL || 'claude-sonnet-5'
 const MAX_REVIEWS = 5000
-const MAX_BATCH = 100
+const MAX_BATCH = 60
 const MAX_REVIEW_CHARS = 2000
 const MAX_MERGE_SOURCES = 400
+const CLAUDE_TIMEOUT_MS = 50_000
 
 const TEAMS = ['Product', 'Tech', 'CX & Support', 'Ops', 'Marketing', 'Other'] as const
 type Team = typeof TEAMS[number]
@@ -156,8 +158,18 @@ export async function POST(req: NextRequest) {
 
     return noStoreJson({ themes })
   } catch (error) {
+    const timedOut =
+      error instanceof Error &&
+      (error.name === 'TimeoutError' || error.name === 'AbortError')
     console.error('Analysis error:', error)
-    return noStoreJson({ error: 'Analysis failed' }, { status: 500 })
+    return noStoreJson(
+      {
+        error: timedOut
+          ? 'Analysis timed out on this batch. Trying again usually works — hit Analyse once more.'
+          : 'Analysis failed',
+      },
+      { status: timedOut ? 504 : 500 }
+    )
   }
 }
 
@@ -293,7 +305,9 @@ async function callClaude(opts: {
       thinking: { type: 'disabled' },
       output_config: { format: { type: 'json_schema', schema: opts.schema } },
       messages: [{ role: 'user', content: opts.prompt }]
-    })
+    }),
+    // Fail before Vercel returns a bare HTML/empty 504 with no JSON body.
+    signal: AbortSignal.timeout(CLAUDE_TIMEOUT_MS),
   })
 
   if (!claudeResponse.ok) {
