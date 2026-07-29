@@ -8,7 +8,10 @@ export const runtime = 'nodejs'
 
 const ANALYSIS_MODEL = process.env.ANALYSIS_MODEL || 'claude-sonnet-5'
 const MAX_REVIEWS = 5000
-const MAX_BATCH = 60
+// Ceiling for a single request — keep >= ANALYSIS_BATCH_SIZE on the client.
+// Client prefers smaller batches for timeout headroom; this must stay high enough
+// that a briefly-cached older frontend (batch of 100) still works after deploy.
+const MAX_BATCH = 100
 const MAX_REVIEW_CHARS = 2000
 const MAX_MERGE_SOURCES = 400
 const CLAUDE_TIMEOUT_MS = 50_000
